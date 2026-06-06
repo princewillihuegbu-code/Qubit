@@ -1,14 +1,11 @@
 from dataclasses import dataclass
 from validator import Signal
 
-STARTING_BALANCE: float = 10_000.0
+DEFAULT_BALANCE: float = 10_000.0
 RISK_PER_TRADE_PCT: float = 0.01
 MAX_DAILY_LOSS_PCT: float = 0.05
 MAX_OPEN_TRADES: int = 3
 MAX_CONSECUTIVE_LOSSES: int = 3
-
-RISK_PER_TRADE: float = STARTING_BALANCE * RISK_PER_TRADE_PCT
-MAX_DAILY_LOSS: float = STARTING_BALANCE * MAX_DAILY_LOSS_PCT
 
 
 @dataclass
@@ -17,6 +14,12 @@ class RiskResult:
     reason: str
     risk_amount: float | None = None
     rr_ratio: float | None = None
+
+
+def get_derived(balance: float) -> tuple[float, float]:
+    risk_per_trade = round(balance * RISK_PER_TRADE_PCT, 2)
+    max_daily_loss = round(balance * MAX_DAILY_LOSS_PCT, 2)
+    return risk_per_trade, max_daily_loss
 
 
 def calculate_rr(signal: Signal) -> float:
@@ -32,7 +35,9 @@ def calculate_rr(signal: Signal) -> float:
     return round(reward / risk, 2)
 
 
-def check_risk(approved_today: int, consecutive_losses: int) -> RiskResult:
+def check_risk(approved_today: int, consecutive_losses: int, balance: float) -> RiskResult:
+    risk_per_trade, max_daily_loss = get_derived(balance)
+
     if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
         return RiskResult(
             False,
@@ -45,48 +50,51 @@ def check_risk(approved_today: int, consecutive_losses: int) -> RiskResult:
             f"Q Risk Engine: Maximum open trades ({MAX_OPEN_TRADES}) already reached for today"
         )
 
-    committed = approved_today * RISK_PER_TRADE
-    if committed >= MAX_DAILY_LOSS:
+    committed = approved_today * risk_per_trade
+    if committed >= max_daily_loss:
         return RiskResult(
             False,
-            f"Q Risk Engine: Daily loss limit of ${MAX_DAILY_LOSS:.0f} (5%) has been reached"
+            f"Q Risk Engine: Daily loss limit of ${max_daily_loss:,.0f} (5%) has been reached"
         )
 
-    return RiskResult(True, "Risk limits OK", risk_amount=RISK_PER_TRADE)
+    return RiskResult(True, "Risk limits OK", risk_amount=risk_per_trade)
 
 
-def risk_status_text(approved_today: int, consecutive_losses: int) -> str:
-    committed = approved_today * RISK_PER_TRADE
-    remaining = max(0.0, MAX_DAILY_LOSS - committed)
+def risk_status_text(approved_today: int, consecutive_losses: int, balance: float) -> str:
+    risk_per_trade, max_daily_loss = get_derived(balance)
+    committed = approved_today * risk_per_trade
+    remaining = max(0.0, max_daily_loss - committed)
     trades_left = max(0, MAX_OPEN_TRADES - approved_today)
     losses_left = max(0, MAX_CONSECUTIVE_LOSSES - consecutive_losses)
 
-    committed_bar_filled = min(10, round((committed / MAX_DAILY_LOSS) * 10))
-    committed_bar = "█" * committed_bar_filled + "░" * (10 - committed_bar_filled)
+    filled = min(10, round((committed / max_daily_loss) * 10)) if max_daily_loss > 0 else 0
+    bar = "█" * filled + "░" * (10 - filled)
+
+    limits_hit = (
+        committed >= max_daily_loss
+        or approved_today >= MAX_OPEN_TRADES
+        or consecutive_losses >= MAX_CONSECUTIVE_LOSSES
+    )
 
     lines = [
         "⚠️ Q Risk Engine — Status",
         "─" * 30,
         "",
-        f"Starting Balance:    ${STARTING_BALANCE:,.0f}",
-        f"Risk Per Trade:      ${RISK_PER_TRADE:.0f} (1%)",
-        f"Max Daily Loss:      ${MAX_DAILY_LOSS:.0f} (5%)",
+        f"Balance:             ${balance:,.2f}",
+        f"Risk Per Trade:      ${risk_per_trade:,.2f} (1%)",
+        f"Max Daily Loss:      ${max_daily_loss:,.2f} (5%)",
         "",
-        f"Committed Today:     ${committed:.0f}",
-        f"Remaining Capacity:  ${remaining:.0f}",
-        f"[{committed_bar}]",
+        f"Committed Today:     ${committed:,.2f}",
+        f"Remaining Capacity:  ${remaining:,.2f}",
+        f"[{bar}]",
         "",
         f"Open Trades:         {approved_today}/{MAX_OPEN_TRADES}",
         f"Consecutive Losses:  {consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}",
         f"Trades Remaining:    {trades_left}",
         f"Loss Buffer:         {losses_left} before pause",
+        "",
+        "🔴 Status: LIMITS REACHED — No new trades" if limits_hit
+        else "🟢 Status: ACTIVE — Accepting signals",
     ]
-
-    if committed >= MAX_DAILY_LOSS or approved_today >= MAX_OPEN_TRADES or consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-        lines.append("")
-        lines.append("🔴 Status: LIMITS REACHED — No new trades")
-    else:
-        lines.append("")
-        lines.append("🟢 Status: ACTIVE — Accepting signals")
 
     return "\n".join(lines)

@@ -27,9 +27,11 @@ from database import (
     get_consecutive_losses,
     get_stats_today,
     get_all_time_stats,
+    get_setting,
+    set_setting,
 )
 from validator import Signal, validate_signal
-from risk import check_risk, calculate_rr, risk_status_text, RISK_PER_TRADE
+from risk import check_risk, calculate_rr, risk_status_text, DEFAULT_BALANCE, get_derived
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -44,7 +46,16 @@ logger = logging.getLogger(__name__)
     SIGNAL_SL,
     SIGNAL_TP,
     SIGNAL_CONFIDENCE,
-) = range(6)
+    SET_BALANCE,
+) = range(7)
+
+
+def current_balance() -> float:
+    raw = get_setting("balance", str(DEFAULT_BALANCE))
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_BALANCE
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -62,7 +73,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📈 Summary", callback_data="summary"),
         ],
         [
+            InlineKeyboardButton("💰 Set Balance", callback_data="set_balance"),
             InlineKeyboardButton("🔄 Reset Day", callback_data="reset"),
+        ],
+        [
             InlineKeyboardButton("❓ Help", callback_data="help"),
         ],
     ])
@@ -76,13 +90,14 @@ def back_keyboard() -> InlineKeyboardMarkup:
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚫 Cancel Signal", callback_data="cancel_signal")]
+        [InlineKeyboardButton("🚫 Cancel", callback_data="cancel_signal")]
     ])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bal = current_balance()
     await update.message.reply_text(
-        "Welcome to Q AI.\nQuantum Execution Intelligence System.\nVersion 2.0 — Active",
+        f"Welcome to Q AI.\nQuantum Execution Intelligence System.\nVersion 2.0 — Active\n\nBalance: ${bal:,.2f}",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -99,9 +114,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def show_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    approved_today = get_approved_count_today()
-    consecutive = get_consecutive_losses()
-    text = risk_status_text(approved_today, consecutive)
+    bal = current_balance()
+    text = risk_status_text(get_approved_count_today(), get_consecutive_losses(), bal)
     await query.edit_message_text(text, reply_markup=back_keyboard())
 
 
@@ -117,7 +131,7 @@ async def show_approved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             lines.append(
                 f"#{t['id']} {t['direction']} {t['symbol']}\n"
                 f"   Entry: {t['entry']} | SL: {t['stop_loss']} | TP: {t['take_profit']}\n"
-                f"   Confidence: {t['confidence']:.0f}% | R:R {t['rr_ratio']} | Risk: ${t['risk_amount']:.0f}\n"
+                f"   Confidence: {t['confidence']:.0f}% | R:R {t['rr_ratio']} | Risk: ${t['risk_amount']:,.2f}\n"
             )
         text = "\n".join(lines)
     await query.edit_message_text(text, reply_markup=back_keyboard())
@@ -147,10 +161,8 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     today = get_stats_today()
     alltime = get_all_time_stats()
 
-    def win_rate(d: dict) -> str:
-        if d["total"] == 0:
-            return "N/A"
-        return f"{(d['approved'] / d['total']) * 100:.1f}%"
+    def approval_rate(d: dict) -> str:
+        return "N/A" if d["total"] == 0 else f"{(d['approved'] / d['total']) * 100:.1f}%"
 
     text = (
         "📊 Q AI — Statistics\n"
@@ -159,12 +171,12 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"  Total Signals:  {today['total']}\n"
         f"  Approved:       {today['approved']}  ✅\n"
         f"  Rejected:       {today['rejected']}  ❌\n"
-        f"  Approval Rate:  {win_rate(today)}\n\n"
+        f"  Approval Rate:  {approval_rate(today)}\n\n"
         f"All Time\n"
         f"  Total Signals:  {alltime['total']}\n"
         f"  Approved:       {alltime['approved']}  ✅\n"
         f"  Rejected:       {alltime['rejected']}  ❌\n"
-        f"  Approval Rate:  {win_rate(alltime)}"
+        f"  Approval Rate:  {approval_rate(alltime)}"
     )
     await query.edit_message_text(text, reply_markup=back_keyboard())
 
@@ -184,17 +196,19 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     approved = today["approved"]
     rejected = today["rejected"]
-    win_rate = (approved / total) * 100
-    approved_today = get_approved_count_today()
-    committed = approved_today * RISK_PER_TRADE
+    rate = (approved / total) * 100
 
-    bar_filled = round(win_rate / 10)
+    bal = current_balance()
+    risk_per_trade, _ = get_derived(bal)
+    approved_today = get_approved_count_today()
+    committed = approved_today * risk_per_trade
+
+    bar_filled = round(rate / 10)
     bar = "█" * bar_filled + "░" * (10 - bar_filled)
 
     trades = get_trades_by_status("approved")
     ticker_counts: dict[str, int] = {}
-    buy_count = 0
-    sell_count = 0
+    buy_count = sell_count = 0
     for t in trades:
         ticker_counts[t["symbol"]] = ticker_counts.get(t["symbol"], 0) + 1
         if t["direction"] == "BUY":
@@ -211,12 +225,13 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     text = (
         f"📈 End-of-Day Summary — {date.today()}\n"
         f"{'─' * 30}\n\n"
-        f"Total Signals:    {total}\n"
-        f"Approved:         {approved}  ✅\n"
-        f"Rejected:         {rejected}  ❌\n\n"
-        f"Approval Rate:  {win_rate:.1f}%\n"
+        f"Total Signals:     {total}\n"
+        f"Approved:          {approved}  ✅\n"
+        f"Rejected:          {rejected}  ❌\n\n"
+        f"Approval Rate:  {rate:.1f}%\n"
         f"[{bar}]\n\n"
-        f"Capital Committed: ${committed:.0f}\n\n"
+        f"Balance:           ${bal:,.2f}\n"
+        f"Capital Committed: ${committed:,.2f}\n\n"
         f"Direction Split (Approved):\n"
         f"  📈 BUY:  {buy_count}\n"
         f"  📉 SELL: {sell_count}\n\n"
@@ -235,8 +250,7 @@ async def show_reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ]
     ])
     await query.edit_message_text(
-        "⚠️ Reset today's session?\n\nThis clears the daily risk counters "
-        "and consecutive loss tracker.\nSQLite trade history is preserved.",
+        "⚠️ Reset today's session?\n\nClears daily risk counters and consecutive loss tracker.\nSQLite trade history is preserved.",
         reply_markup=keyboard,
     )
 
@@ -253,27 +267,100 @@ async def do_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    bal = current_balance()
+    risk_per_trade, max_daily_loss = get_derived(bal)
     text = (
         "Q AI v2.0 — Help\n\n"
-        "📡 Log Signal — Submit a new trade signal (6-field validation)\n"
-        "⚠️ Risk — View live risk engine status\n"
+        "📡 Log Signal — Submit a signal (6-field validation)\n"
+        "⚠️ Risk — Live risk engine status\n"
         "✅ Approved — Today's approved trades\n"
-        "❌ Rejected — Today's rejected signals with reasons\n"
+        "❌ Rejected — Today's rejected signals + reasons\n"
         "📊 Stats — Today and all-time approval stats\n"
         "📈 Summary — End-of-day report\n"
+        "💰 Set Balance — Update paper trading balance\n"
         "🔄 Reset Day — Clear daily counters\n\n"
         "Signal Validation Rules:\n"
-        "  • Confidence must be ≥ 65%\n"
-        "  • SL below Entry (BUY) / above Entry (SELL)\n"
-        "  • TP above Entry (BUY) / below Entry (SELL)\n\n"
-        "Risk Engine Limits:\n"
-        "  • $100 risk per trade (1%)\n"
-        "  • Max 3 open trades/day\n"
-        "  • Max 5% daily loss ($500)\n"
-        "  • Pause after 3 consecutive losses\n\n"
-        "Mode: Paper Trading Only"
+        "  • Confidence ≥ 65%\n"
+        "  • SL below Entry for BUY / above for SELL\n"
+        "  • TP above Entry for BUY / below for SELL\n\n"
+        f"Risk Engine (Balance: ${bal:,.2f})\n"
+        f"  • ${risk_per_trade:,.2f} risk per trade (1%)\n"
+        f"  • Max 3 open trades/day\n"
+        f"  • Max 5% daily loss (${max_daily_loss:,.2f})\n"
+        f"  • Pause after 3 consecutive losses\n\n"
+        "Mode: Paper Trading Only\n\n"
+        "Commands: /approved /rejected /stats /risk /setbalance"
     )
     await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def balance_start_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    bal = current_balance()
+    await query.edit_message_text(
+        f"💰 Set Paper Trading Balance\n\n"
+        f"Current Balance: ${bal:,.2f}\n\n"
+        f"Enter the new balance (e.g. 25000):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_balance")]
+        ]),
+    )
+    return SET_BALANCE
+
+
+async def balance_start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    bal = current_balance()
+    await update.message.reply_text(
+        f"💰 Set Paper Trading Balance\n\n"
+        f"Current Balance: ${bal:,.2f}\n\n"
+        f"Enter the new balance (e.g. 25000):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_balance")]
+        ]),
+    )
+    return SET_BALANCE
+
+
+async def balance_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        new_bal = float(update.message.text.strip().replace(",", ""))
+        if new_bal <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid amount. Enter a positive number (e.g. 25000):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_balance")]
+            ]),
+        )
+        return SET_BALANCE
+
+    old_bal = current_balance()
+    set_setting("balance", str(new_bal))
+    risk_per_trade, max_daily_loss = get_derived(new_bal)
+
+    text = (
+        "💰 Balance Updated\n"
+        f"{'─' * 26}\n\n"
+        f"Previous:        ${old_bal:,.2f}\n"
+        f"New Balance:     ${new_bal:,.2f}\n\n"
+        f"Risk Per Trade:  ${risk_per_trade:,.2f} (1%)\n"
+        f"Max Daily Loss:  ${max_daily_loss:,.2f} (5%)\n\n"
+        f"Q Risk Engine recalculated."
+    )
+    await update.message.reply_text(text, reply_markup=back_keyboard())
+    return ConversationHandler.END
+
+
+async def cancel_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Balance update cancelled.\n\nQ AI v2.0 — Main Menu\nSelect an option below:",
+        reply_markup=main_menu_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def signal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -300,7 +387,7 @@ async def signal_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(
         f"📡 Q Signal Logger — Step 2 of 6\n\n"
         f"Symbol: {context.user_data['symbol']}\n\n"
-        f"Choose trade direction:",
+        f"Choose direction:",
         reply_markup=keyboard,
     )
     return SIGNAL_DIRECTION
@@ -312,7 +399,7 @@ async def signal_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["direction"] = query.data.split("_")[1]
     await query.edit_message_text(
         f"📡 Q Signal Logger — Step 3 of 6\n\n"
-        f"Symbol: {context.user_data['symbol']} | Direction: {context.user_data['direction']}\n\n"
+        f"Symbol: {context.user_data['symbol']} | {context.user_data['direction']}\n\n"
         f"Enter Entry Price:",
         reply_markup=cancel_keyboard(),
     )
@@ -323,14 +410,11 @@ async def signal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     try:
         context.user_data["entry"] = float(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text(
-            "Invalid price. Enter a numeric value (e.g. 150.25):",
-            reply_markup=cancel_keyboard(),
-        )
+        await update.message.reply_text("Invalid price. Enter a number:", reply_markup=cancel_keyboard())
         return SIGNAL_ENTRY
     await update.message.reply_text(
         f"📡 Q Signal Logger — Step 4 of 6\n\n"
-        f"Symbol: {context.user_data['symbol']} | Direction: {context.user_data['direction']}\n"
+        f"Symbol: {context.user_data['symbol']} | {context.user_data['direction']}\n"
         f"Entry: {context.user_data['entry']}\n\n"
         f"Enter Stop Loss:",
         reply_markup=cancel_keyboard(),
@@ -342,14 +426,11 @@ async def signal_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         context.user_data["stop_loss"] = float(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text(
-            "Invalid price. Enter a numeric value:",
-            reply_markup=cancel_keyboard(),
-        )
+        await update.message.reply_text("Invalid price. Enter a number:", reply_markup=cancel_keyboard())
         return SIGNAL_SL
     await update.message.reply_text(
         f"📡 Q Signal Logger — Step 5 of 6\n\n"
-        f"Symbol: {context.user_data['symbol']} | Direction: {context.user_data['direction']}\n"
+        f"Symbol: {context.user_data['symbol']} | {context.user_data['direction']}\n"
         f"Entry: {context.user_data['entry']} | SL: {context.user_data['stop_loss']}\n\n"
         f"Enter Take Profit:",
         reply_markup=cancel_keyboard(),
@@ -361,14 +442,11 @@ async def signal_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         context.user_data["take_profit"] = float(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text(
-            "Invalid price. Enter a numeric value:",
-            reply_markup=cancel_keyboard(),
-        )
+        await update.message.reply_text("Invalid price. Enter a number:", reply_markup=cancel_keyboard())
         return SIGNAL_TP
     await update.message.reply_text(
         f"📡 Q Signal Logger — Step 6 of 6\n\n"
-        f"Symbol: {context.user_data['symbol']} | Direction: {context.user_data['direction']}\n"
+        f"Symbol: {context.user_data['symbol']} | {context.user_data['direction']}\n"
         f"Entry: {context.user_data['entry']} | SL: {context.user_data['stop_loss']} | TP: {context.user_data['take_profit']}\n\n"
         f"Enter Confidence Score (0–100):",
         reply_markup=cancel_keyboard(),
@@ -404,19 +482,14 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if not validation.valid:
         insert_trade(
-            symbol=signal.symbol,
-            direction=signal.direction,
-            entry=signal.entry,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
-            confidence=signal.confidence,
-            status="rejected",
-            reason=validation.reason,
-            risk_amount=None,
-            rr_ratio=None,
+            symbol=signal.symbol, direction=signal.direction,
+            entry=signal.entry, stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit, confidence=signal.confidence,
+            status="rejected", reason=validation.reason,
+            risk_amount=None, rr_ratio=None,
         )
         context.user_data.clear()
-        text = (
+        await update.message.reply_text(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "❌  REJECTED SIGNAL\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -427,30 +500,26 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"TP:         {signal.take_profit}\n"
             f"Confidence: {signal.confidence:.0f}%\n\n"
             f"Layer:   Q Validation\n"
-            f"Reason:  {validation.reason}"
+            f"Reason:  {validation.reason}",
+            reply_markup=back_keyboard(),
         )
-        await update.message.reply_text(text, reply_markup=back_keyboard())
         return ConversationHandler.END
 
+    bal = current_balance()
     approved_today = get_approved_count_today()
     consecutive = get_consecutive_losses()
-    risk = check_risk(approved_today, consecutive)
+    risk = check_risk(approved_today, consecutive, bal)
 
     if not risk.allowed:
         insert_trade(
-            symbol=signal.symbol,
-            direction=signal.direction,
-            entry=signal.entry,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
-            confidence=signal.confidence,
-            status="rejected",
-            reason=risk.reason,
-            risk_amount=None,
-            rr_ratio=None,
+            symbol=signal.symbol, direction=signal.direction,
+            entry=signal.entry, stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit, confidence=signal.confidence,
+            status="rejected", reason=risk.reason,
+            risk_amount=None, rr_ratio=None,
         )
         context.user_data.clear()
-        text = (
+        await update.message.reply_text(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "❌  REJECTED SIGNAL\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -461,26 +530,21 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"TP:         {signal.take_profit}\n"
             f"Confidence: {signal.confidence:.0f}%\n\n"
             f"Layer:   Q Risk Engine\n"
-            f"Reason:  {risk.reason}"
+            f"Reason:  {risk.reason}",
+            reply_markup=back_keyboard(),
         )
-        await update.message.reply_text(text, reply_markup=back_keyboard())
         return ConversationHandler.END
 
     rr = calculate_rr(signal)
     insert_trade(
-        symbol=signal.symbol,
-        direction=signal.direction,
-        entry=signal.entry,
-        stop_loss=signal.stop_loss,
-        take_profit=signal.take_profit,
-        confidence=signal.confidence,
-        status="approved",
-        reason=validation.reason,
-        risk_amount=risk.risk_amount,
-        rr_ratio=rr,
+        symbol=signal.symbol, direction=signal.direction,
+        entry=signal.entry, stop_loss=signal.stop_loss,
+        take_profit=signal.take_profit, confidence=signal.confidence,
+        status="approved", reason=validation.reason,
+        risk_amount=risk.risk_amount, rr_ratio=rr,
     )
     context.user_data.clear()
-    text = (
+    await update.message.reply_text(
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "✅  APPROVED SIGNAL\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -490,11 +554,12 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"Stop Loss:   {signal.stop_loss}\n"
         f"Take Profit: {signal.take_profit}\n"
         f"Confidence:  {signal.confidence:.0f}%\n\n"
-        f"Risk Amount: ${risk.risk_amount:.0f}\n"
+        f"Balance:     ${bal:,.2f}\n"
+        f"Risk Amount: ${risk.risk_amount:,.2f}\n"
         f"R:R Ratio:   1:{rr}\n\n"
-        f"Mode: Paper Trading"
+        f"Mode: Paper Trading",
+        reply_markup=back_keyboard(),
     )
-    await update.message.reply_text(text, reply_markup=back_keyboard())
     return ConversationHandler.END
 
 
@@ -523,14 +588,14 @@ async def cancel_signal_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def cmd_approved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     trades = get_trades_by_status("approved")
     if not trades:
-        await update.message.reply_text("No approved trades today.", reply_markup=back_keyboard())
+        await update.message.reply_text("No approved trades today.", reply_markup=main_menu_keyboard())
         return
     lines = [f"✅ Approved Trades Today — {len(trades)}\n"]
     for t in trades:
         lines.append(
             f"#{t['id']} {t['direction']} {t['symbol']}\n"
             f"   Entry: {t['entry']} | SL: {t['stop_loss']} | TP: {t['take_profit']}\n"
-            f"   Confidence: {t['confidence']:.0f}% | R:R {t['rr_ratio']} | Risk: ${t['risk_amount']:.0f}\n"
+            f"   Confidence: {t['confidence']:.0f}% | R:R {t['rr_ratio']} | Risk: ${t['risk_amount']:,.2f}\n"
         )
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_keyboard())
 
@@ -538,7 +603,7 @@ async def cmd_approved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_rejected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     trades = get_trades_by_status("rejected")
     if not trades:
-        await update.message.reply_text("No rejected signals today.", reply_markup=back_keyboard())
+        await update.message.reply_text("No rejected signals today.", reply_markup=main_menu_keyboard())
         return
     lines = [f"❌ Rejected Signals Today — {len(trades)}\n"]
     for t in trades:
@@ -554,10 +619,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today = get_stats_today()
     alltime = get_all_time_stats()
 
-    def win_rate(d: dict) -> str:
-        if d["total"] == 0:
-            return "N/A"
-        return f"{(d['approved'] / d['total']) * 100:.1f}%"
+    def approval_rate(d: dict) -> str:
+        return "N/A" if d["total"] == 0 else f"{(d['approved'] / d['total']) * 100:.1f}%"
 
     text = (
         "📊 Q AI — Statistics\n"
@@ -566,21 +629,24 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"  Total:     {today['total']}\n"
         f"  Approved:  {today['approved']}  ✅\n"
         f"  Rejected:  {today['rejected']}  ❌\n"
-        f"  Rate:      {win_rate(today)}\n\n"
+        f"  Rate:      {approval_rate(today)}\n\n"
         f"All Time\n"
         f"  Total:     {alltime['total']}\n"
         f"  Approved:  {alltime['approved']}  ✅\n"
         f"  Rejected:  {alltime['rejected']}  ❌\n"
-        f"  Rate:      {win_rate(alltime)}"
+        f"  Rate:      {approval_rate(alltime)}"
     )
     await update.message.reply_text(text, reply_markup=main_menu_keyboard())
 
 
 async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    approved_today = get_approved_count_today()
-    consecutive = get_consecutive_losses()
-    text = risk_status_text(approved_today, consecutive)
+    bal = current_balance()
+    text = risk_status_text(get_approved_count_today(), get_consecutive_losses(), bal)
     await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+
+
+async def cmd_setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await balance_start_cmd(update, context)
 
 
 def main() -> None:
@@ -597,6 +663,7 @@ def main() -> None:
         states={
             SIGNAL_SYMBOL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, signal_symbol),
+                CallbackQueryHandler(cancel_signal, pattern="^cancel_signal$"),
             ],
             SIGNAL_DIRECTION: [
                 CallbackQueryHandler(signal_direction, pattern="^dir_"),
@@ -623,12 +690,28 @@ def main() -> None:
         per_message=False,
     )
 
+    balance_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(balance_start_btn, pattern="^set_balance$"),
+            CommandHandler("setbalance", balance_start_cmd),
+        ],
+        states={
+            SET_BALANCE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, balance_input),
+                CallbackQueryHandler(cancel_balance, pattern="^cancel_balance$"),
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+        per_message=False,
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("approved", cmd_approved))
     app.add_handler(CommandHandler("rejected", cmd_rejected))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("risk", cmd_risk))
     app.add_handler(signal_conv)
+    app.add_handler(balance_conv)
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(show_risk, pattern="^risk$"))
     app.add_handler(CallbackQueryHandler(show_approved, pattern="^approved$"))
