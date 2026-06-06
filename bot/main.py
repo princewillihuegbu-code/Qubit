@@ -1,10 +1,21 @@
 import os
 import json
 import logging
+import warnings
 from datetime import date
 from pathlib import Path
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.warnings import PTBUserWarning
+warnings.filterwarnings("ignore", category=PTBUserWarning)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -13,6 +24,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DATA_FILE = Path(__file__).parent / "data.json"
+
+CHOOSING_DIRECTION, ENTERING_TICKER, CHOOSING_DECISION = range(3)
 
 
 def load_data() -> dict:
@@ -34,120 +47,217 @@ def save_data(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Status", callback_data="status"),
+            InlineKeyboardButton("📡 Log Signal", callback_data="log_signal"),
+        ],
+        [
+            InlineKeyboardButton("📋 Today's Signals", callback_data="signals_list"),
+            InlineKeyboardButton("🔄 Reset", callback_data="reset"),
+        ],
+        [
+            InlineKeyboardButton("❓ Help", callback_data="help"),
+        ],
+    ])
+
+
+def back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Main Menu", callback_data="main_menu")]
+    ])
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "Welcome to Q AI.\n"
         "Quantum Execution Intelligence System.\n"
         "Status: Active"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard())
 
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Q AI — Main Menu\nSelect an option below:",
+        reply_markup=main_menu_keyboard()
+    )
+
+
+async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
     data = load_data()
-    signals_today = len(data["signals"])
-    approved = data["approved"]
-    rejected = data["rejected"]
     text = (
         "Q AI Status\n"
         "Mode: Signal Monitoring\n"
-        f"Signals Today: {signals_today}\n"
-        f"Approved Trades: {approved}\n"
-        f"Rejected Trades: {rejected}"
+        f"Signals Today: {len(data['signals'])}\n"
+        f"Approved Trades: {data['approved']}\n"
+        f"Rejected Trades: {data['rejected']}"
     )
-    await update.message.reply_text(text)
+    await query.edit_message_text(text, reply_markup=back_keyboard())
 
 
-async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    usage = (
-        "Usage: /signal <DIRECTION> <TICKER> <approve|reject>\n"
-        "Example: /signal BUY AAPL approve\n"
-        "Example: /signal SELL TSLA reject"
+async def show_signals_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = load_data()
+    signals = data["signals"]
+    if not signals:
+        text = "No signals logged today."
+    else:
+        lines = ["Today's Signals:\n"]
+        for i, s in enumerate(signals, 1):
+            lines.append(f"{i}. {s['direction']} {s['ticker']} — {s['decision'].capitalize()}")
+        text = "\n".join(lines)
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def show_reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm Reset", callback_data="reset_confirm"),
+            InlineKeyboardButton("❌ Cancel", callback_data="main_menu"),
+        ]
+    ])
+    await query.edit_message_text(
+        "⚠️ Reset all signal data for today?\nThis cannot be undone.",
+        reply_markup=keyboard
     )
 
-    args = context.args
-    if not args or len(args) < 3:
-        await update.message.reply_text(usage)
-        return
 
-    direction = args[0].upper()
-    ticker = args[1].upper()
-    decision = args[2].lower()
+async def do_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = {"date": str(date.today()), "signals": [], "approved": 0, "rejected": 0}
+    save_data(data)
+    await query.edit_message_text(
+        "✅ Signal data reset.\nAll counts cleared for today.",
+        reply_markup=back_keyboard()
+    )
 
-    if direction not in ("BUY", "SELL"):
-        await update.message.reply_text(f"Invalid direction '{args[0]}'. Use BUY or SELL.\n\n{usage}")
-        return
 
-    if decision not in ("approve", "reject"):
-        await update.message.reply_text(f"Invalid decision '{args[2]}'. Use approve or reject.\n\n{usage}")
-        return
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    text = (
+        "Q AI — Help\n\n"
+        "📊 Status — View today's signal counts\n"
+        "📡 Log Signal — Record a new trade signal step by step\n"
+        "📋 Today's Signals — See all signals logged today\n"
+        "🔄 Reset — Clear today's signal data\n\n"
+        "Use /start to return to the main menu at any time."
+    )
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def signal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📈 BUY", callback_data="dir_BUY"),
+            InlineKeyboardButton("📉 SELL", callback_data="dir_SELL"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_signal")],
+    ])
+    await query.edit_message_text(
+        "Step 1 of 3 — Choose direction:",
+        reply_markup=keyboard
+    )
+    return CHOOSING_DIRECTION
+
+
+async def signal_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    direction = query.data.split("_")[1]
+    context.user_data["signal_direction"] = direction
+    await query.edit_message_text(
+        f"Step 2 of 3 — Direction: {direction}\n\nType the ticker symbol (e.g. AAPL, TSLA, BTC):"
+    )
+    return ENTERING_TICKER
+
+
+async def signal_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    ticker = update.message.text.strip().upper()
+    context.user_data["signal_ticker"] = ticker
+    direction = context.user_data["signal_direction"]
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data="dec_approve"),
+            InlineKeyboardButton("❌ Reject", callback_data="dec_reject"),
+        ],
+        [InlineKeyboardButton("🚫 Cancel", callback_data="cancel_signal_msg")],
+    ])
+    await update.message.reply_text(
+        f"Step 3 of 3 — {direction} {ticker}\n\nApprove or reject this trade?",
+        reply_markup=keyboard
+    )
+    return CHOOSING_DECISION
+
+
+async def signal_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    decision = query.data.split("_")[1]
+    direction = context.user_data.get("signal_direction", "?")
+    ticker = context.user_data.get("signal_ticker", "?")
 
     data = load_data()
-
-    entry = {
+    data["signals"].append({
         "direction": direction,
         "ticker": ticker,
         "decision": decision,
         "time": str(date.today())
-    }
-    data["signals"].append(entry)
-
+    })
     if decision == "approve":
         data["approved"] += 1
-        status_label = "Approved"
+        label = "Approved ✅"
     else:
         data["rejected"] += 1
-        status_label = "Rejected"
-
+        label = "Rejected ❌"
     save_data(data)
 
+    context.user_data.clear()
     text = (
         f"Signal Logged\n"
         f"Direction: {direction}\n"
         f"Ticker: {ticker}\n"
-        f"Decision: {status_label}\n\n"
+        f"Decision: {label}\n\n"
         f"Signals Today: {len(data['signals'])} | "
         f"Approved: {data['approved']} | "
         f"Rejected: {data['rejected']}"
     )
-    await update.message.reply_text(text)
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+    return ConversationHandler.END
 
 
-async def signals_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = load_data()
-    signals = data["signals"]
-    if not signals:
-        await update.message.reply_text("No signals logged today.")
-        return
-
-    lines = ["Today's Signals:\n"]
-    for i, s in enumerate(signals, 1):
-        lines.append(f"{i}. {s['direction']} {s['ticker']} — {s['decision'].capitalize()}")
-
-    await update.message.reply_text("\n".join(lines))
-
-
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    today = str(date.today())
-    data = {"date": today, "signals": [], "approved": 0, "rejected": 0}
-    save_data(data)
-    await update.message.reply_text("All signal data for today has been reset.")
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "Q AI — Available Commands\n\n"
-        "/start — Welcome message and system status\n"
-        "/status — View current signal monitoring stats\n"
-        "/signal <DIR> <TICKER> <approve|reject> — Log a trade signal\n"
-        "/signals — List all signals logged today\n"
-        "/reset — Clear today's signal data\n"
-        "/help — Show this list of commands\n\n"
-        "Example:\n"
-        "/signal BUY AAPL approve\n"
-        "/signal SELL TSLA reject"
+async def cancel_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Signal cancelled.\nQ AI — Main Menu\nSelect an option below:",
+        reply_markup=main_menu_keyboard()
     )
-    await update.message.reply_text(text)
+    return ConversationHandler.END
+
+
+async def cancel_signal_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Signal cancelled.\nQ AI — Main Menu\nSelect an option below:",
+        reply_markup=main_menu_keyboard()
+    )
+    return ConversationHandler.END
 
 
 def main() -> None:
@@ -157,12 +267,33 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
+    signal_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(signal_start, pattern="^log_signal$")],
+        states={
+            CHOOSING_DIRECTION: [
+                CallbackQueryHandler(signal_direction, pattern="^dir_"),
+                CallbackQueryHandler(cancel_signal, pattern="^cancel_signal$"),
+            ],
+            ENTERING_TICKER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, signal_ticker),
+            ],
+            CHOOSING_DECISION: [
+                CallbackQueryHandler(signal_decision, pattern="^dec_"),
+                CallbackQueryHandler(cancel_signal_msg, pattern="^cancel_signal_msg$"),
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+        per_message=False,
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("signal", signal_command))
-    app.add_handler(CommandHandler("signals", signals_list))
-    app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(signal_conv)
+    app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(show_status, pattern="^status$"))
+    app.add_handler(CallbackQueryHandler(show_signals_list, pattern="^signals_list$"))
+    app.add_handler(CallbackQueryHandler(show_reset_confirm, pattern="^reset$"))
+    app.add_handler(CallbackQueryHandler(do_reset, pattern="^reset_confirm$"))
+    app.add_handler(CallbackQueryHandler(show_help, pattern="^help$"))
 
     logger.info("Q AI bot is starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
