@@ -55,9 +55,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📋 Today's Signals", callback_data="signals_list"),
-            InlineKeyboardButton("🔄 Reset", callback_data="reset"),
+            InlineKeyboardButton("📈 Summary", callback_data="summary"),
         ],
         [
+            InlineKeyboardButton("🔄 Reset", callback_data="reset"),
             InlineKeyboardButton("❓ Help", callback_data="help"),
         ],
     ])
@@ -152,6 +153,59 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📋 Today's Signals — See all signals logged today\n"
         "🔄 Reset — Clear today's signal data\n\n"
         "Use /start to return to the main menu at any time."
+    )
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = load_data()
+    signals = data["signals"]
+    total = len(signals)
+
+    if total == 0:
+        await query.edit_message_text(
+            "📈 End-of-Day Summary\n\nNo signals logged today.",
+            reply_markup=back_keyboard()
+        )
+        return
+
+    approved = data["approved"]
+    rejected = data["rejected"]
+    win_rate = (approved / total) * 100
+
+    ticker_counts: dict[str, int] = {}
+    buy_count = 0
+    sell_count = 0
+    for s in signals:
+        ticker_counts[s["ticker"]] = ticker_counts.get(s["ticker"], 0) + 1
+        if s["direction"] == "BUY":
+            buy_count += 1
+        else:
+            sell_count += 1
+
+    ranked = sorted(ticker_counts.items(), key=lambda x: x[1], reverse=True)
+    top_tickers = "\n".join(
+        f"  {i+1}. {ticker} — {count} signal{'s' if count > 1 else ''}"
+        for i, (ticker, count) in enumerate(ranked[:5])
+    )
+
+    bar_filled = round(win_rate / 10)
+    bar = "█" * bar_filled + "░" * (10 - bar_filled)
+
+    text = (
+        f"📈 End-of-Day Summary — {data['date']}\n"
+        f"{'─' * 30}\n\n"
+        f"Total Signals:   {total}\n"
+        f"Approved:        {approved}  ✅\n"
+        f"Rejected:        {rejected}  ❌\n\n"
+        f"Win Rate:  {win_rate:.1f}%\n"
+        f"[{bar}]\n\n"
+        f"Direction Split:\n"
+        f"  📈 BUY:  {buy_count}\n"
+        f"  📉 SELL: {sell_count}\n\n"
+        f"Top Tickers:\n{top_tickers}"
     )
     await query.edit_message_text(text, reply_markup=back_keyboard())
 
@@ -294,6 +348,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(show_reset_confirm, pattern="^reset$"))
     app.add_handler(CallbackQueryHandler(do_reset, pattern="^reset_confirm$"))
     app.add_handler(CallbackQueryHandler(show_help, pattern="^help$"))
+    app.add_handler(CallbackQueryHandler(show_summary, pattern="^summary$"))
 
     logger.info("Q AI bot is starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
