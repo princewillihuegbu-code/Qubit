@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "name": "Run Qubit",
+    "type": "python",
+    "request": "launch",
+    "program": "main.py",
+    "envFile": "${workspaceFolder}/.env"
+  }]
+}
