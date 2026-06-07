@@ -6,8 +6,7 @@ import asyncio
 
 from dotenv import load_dotenv
 load_dotenv()
-from bot.server import start as start_server
-start_server()
+from server import start as start_server
 
 sys.path.insert(0, os.path.dirname(__file__))
 
