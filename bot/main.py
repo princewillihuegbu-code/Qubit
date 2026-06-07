@@ -2,6 +2,9 @@ import os
 import sys
 import logging
 import warnings
+import asyncio
+
+
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -1563,9 +1566,12 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── App entry ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Fix for Python 3.14+ — no default event loop
+    if sys.version_info >= (3, 14):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set.")
 
     init_db()
 
