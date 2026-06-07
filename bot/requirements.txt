@@ -2,3 +2,4 @@ python-telegram-bot==21.6
 requests
 matplotlib
 apscheduler>=3.6.3,<3.11
+python-dotenv
