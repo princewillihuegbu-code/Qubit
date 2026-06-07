@@ -46,6 +46,7 @@ from risk import check_risk, calculate_rr, risk_status_text, DEFAULT_BALANCE, ge
 from paper_engine import open_trade, close_trade, get_balance
 from market_data import is_api_configured
 from signal_engine import scan_markets, MarketSignal
+from chart import generate_equity_chart
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -325,7 +326,63 @@ async def _send_performance(send_fn) -> None:
         f"{best_line}\n"
         f"{worst_line}"
     )
-    await send_fn(text, reply_markup=back_keyboard())
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 Equity Chart", callback_data="equity_chart")],
+        [InlineKeyboardButton("⬅️ Main Menu",    callback_data="main_menu")],
+    ])
+    await send_fn(text, reply_markup=keyboard)
+
+
+# ── Equity chart ────────────────────────────────────────────────────────────────
+
+async def _send_chart(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate the equity chart and send it as a photo."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    buf = await loop.run_in_executor(None, generate_equity_chart)
+
+    if buf is None:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "📊 No data yet\n\n"
+                "Equity chart appears after your first closed paper trade.\n\n"
+                "Tip: close an open trade via 📋 Open Trades → win / loss / breakeven"
+            ),
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    stats       = get_performance_stats()
+    bal         = get_balance()
+    total_pnl   = stats["total_pnl"]
+    pnl_sign    = "+" if total_pnl >= 0 else ""
+    win_rate    = stats["win_rate"]
+
+    caption = (
+        f"📈 Qubit — Equity Curve\n"
+        f"Balance: ${bal:,.2f}  |  PnL: {pnl_sign}${total_pnl:,.2f}  |  "
+        f"Win Rate: {win_rate:.1f}%  |  "
+        f"Trades: {stats['closed']} closed"
+    )
+    await context.bot.send_photo(chat_id=chat_id, photo=buf, caption=caption)
+
+
+async def show_chart_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the 📈 Equity Chart button."""
+    query = update.callback_query
+    await query.answer("Generating chart…")
+    await _send_chart(query.message.chat_id, context)
+
+
+async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/chart — send the equity curve chart."""
+    msg = await update.message.reply_text("📊 Generating equity chart…")
+    await _send_chart(update.effective_chat.id, context)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 
 # ── Daily report ───────────────────────────────────────────────────────────────
@@ -1294,6 +1351,7 @@ def main() -> None:
     app.add_handler(CommandHandler("scan",          cmd_scan))
     app.add_handler(CommandHandler("setchat",       cmd_setchat))
     app.add_handler(CommandHandler("autoscan",      cmd_autoscan))
+    app.add_handler(CommandHandler("chart",         cmd_chart))
 
     # Conversations
     app.add_handler(signal_conv)
@@ -1315,6 +1373,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_close_trade,    pattern=r"^close_\d+_(win|loss|breakeven)$"))
     app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^market_scan$"))
     app.add_handler(CallbackQueryHandler(handle_log_autosignal, pattern="^logsig_"))
+    app.add_handler(CallbackQueryHandler(show_chart_btn,        pattern="^equity_chart$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
     # Auto-scan job — every 10 minutes, first run after 60 s
