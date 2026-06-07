@@ -37,10 +37,15 @@ from database import (
     get_all_paper_trades,
     get_performance_stats,
     get_daily_pnl_today,
+    add_alert_chat,
+    remove_alert_chat,
+    get_alert_chats,
 )
 from validator import Signal, validate_signal
 from risk import check_risk, calculate_rr, risk_status_text, DEFAULT_BALANCE, get_derived
 from paper_engine import open_trade, close_trade, get_balance
+from market_data import is_api_configured
+from signal_engine import scan_markets, MarketSignal
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -72,23 +77,26 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📡 Log Signal",    callback_data="log_signal"),
+            InlineKeyboardButton("🔍 Scan Markets",  callback_data="market_scan"),
+        ],
+        [
             InlineKeyboardButton("🌍 Market",        callback_data="market_status"),
+            InlineKeyboardButton("📋 Open Trades",   callback_data="open_trades"),
         ],
         [
-            InlineKeyboardButton("📋 Open Trades",  callback_data="open_trades"),
-            InlineKeyboardButton("📊 Performance",  callback_data="performance"),
+            InlineKeyboardButton("📊 Performance",   callback_data="performance"),
+            InlineKeyboardButton("📅 Daily Report",  callback_data="daily_report"),
         ],
         [
-            InlineKeyboardButton("✅ Approved",      callback_data="approved"),
-            InlineKeyboardButton("❌ Rejected",      callback_data="rejected"),
+            InlineKeyboardButton("✅ Approved",       callback_data="approved"),
+            InlineKeyboardButton("❌ Rejected",        callback_data="rejected"),
         ],
         [
-            InlineKeyboardButton("📅 Daily Report", callback_data="daily_report"),
-            InlineKeyboardButton("💰 Balance",       callback_data="set_balance"),
+            InlineKeyboardButton("💰 Balance",        callback_data="set_balance"),
+            InlineKeyboardButton("⚠️ Risk",            callback_data="risk"),
         ],
         [
-            InlineKeyboardButton("⚠️ Risk",          callback_data="risk"),
-            InlineKeyboardButton("❓ Help",           callback_data="help"),
+            InlineKeyboardButton("❓ Help",            callback_data="help"),
         ],
     ])
 
@@ -891,6 +899,329 @@ async def cancel_signal_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 
+# ── Market scan helpers ────────────────────────────────────────────────────────
+
+def _sig_callback(sig: MarketSignal) -> str:
+    """Encode signal into callback_data (always under 64 bytes)."""
+    return f"logsig_{sig.symbol}_{sig.action}_{sig.entry}_{sig.sl}_{sig.tp}_{sig.confidence}"
+
+
+def format_signal_message(sig: MarketSignal, auto: bool = False) -> str:
+    header = "🤖 AUTO-SIGNAL" if auto else "🔔 QUBIT SIGNAL"
+    cross_label = "Fresh crossover ✅" if sig.crossover else "Trend continuation"
+    if sig.rsi < 35:
+        rsi_zone = "Oversold ⚠️"
+    elif sig.rsi > 65:
+        rsi_zone = "Overbought ⚠️"
+    else:
+        rsi_zone = "Neutral ✅"
+    action_icon = "📈 BUY" if sig.action == "BUY" else "📉 SELL"
+    return (
+        f"{header}\n"
+        f"{'━' * 28}\n"
+        f"PAIR:        {sig.symbol}\n"
+        f"PRICE:       {sig.price}\n"
+        f"ACTION:      {action_icon}\n"
+        f"ENTRY:       {sig.entry}\n"
+        f"SL:          {sig.sl}\n"
+        f"TP:          {sig.tp}\n"
+        f"CONFIDENCE:  {sig.confidence}%\n"
+        f"{'━' * 28}\n"
+        f"EMA20/50:   {cross_label}\n"
+        f"RSI(14):    {sig.rsi} — {rsi_zone}\n"
+        f"Interval:   {sig.interval}\n"
+        f"Mode:       Paper Trading"
+    )
+
+
+def logsig_keyboard(sig: MarketSignal) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Log as Paper Trade", callback_data=_sig_callback(sig))],
+        [InlineKeyboardButton("⬅️ Main Menu", callback_data="main_menu")],
+    ])
+
+
+async def _do_scan(chat_id: int, context: ContextTypes.DEFAULT_TYPE, reply_fn) -> None:
+    """
+    Core scan logic shared by /scan command and the Scan Markets button.
+    reply_fn: async callable for the first reply (edit_message_text or msg.edit_text).
+    Additional signals go via context.bot.send_message(chat_id).
+    """
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        results = await loop.run_in_executor(None, scan_markets)
+    except Exception as exc:
+        await reply_fn(f"❌ Scan failed: {exc}", reply_markup=back_keyboard())
+        return
+
+    signals  = [(sym, sig) for sym, sig in results if isinstance(sig, MarketSignal)]
+    no_signal = [sym for sym, sig in results if sig is None]
+    errors   = [(sym, err) for sym, err in results if isinstance(err, Exception)]
+
+    if not signals:
+        no_sig_str = ", ".join(no_signal) if no_signal else "—"
+        err_str = "\n".join(f"• {s}: {e}" for s, e in errors) or "  None"
+        note = f"\n\nErrors:\n{err_str}" if errors else ""
+        await reply_fn(
+            f"🔍 Market Scan Complete\n\n"
+            f"No actionable signals detected.\n"
+            f"Pairs scanned: {no_sig_str}{note}",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    # First signal — replace the "Scanning..." message
+    _, first_sig = signals[0]
+    await reply_fn(format_signal_message(first_sig), reply_markup=logsig_keyboard(first_sig))
+
+    # Additional signals — new messages
+    for _, sig in signals[1:]:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=format_signal_message(sig),
+            reply_markup=logsig_keyboard(sig),
+        )
+
+    # Footer summary
+    no_sig_str = f" | No signal: {', '.join(no_signal)}" if no_signal else ""
+    if len(signals) > 1 or no_signal:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🔍 Scan done — {len(signals)} signal(s) found{no_sig_str}",
+            reply_markup=back_keyboard(),
+        )
+
+
+async def show_scan_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the 🔍 Scan Markets button from main menu."""
+    query = update.callback_query
+    await query.answer()
+    if not is_api_configured():
+        await query.edit_message_text(
+            "⚠️ Market scan unavailable\n\n"
+            "TWELVE_DATA_API_KEY is not configured.\n"
+            "Add it to Replit Secrets and restart the bot.",
+            reply_markup=back_keyboard(),
+        )
+        return
+    await query.edit_message_text("🔍 Scanning markets… please wait (up to 10 s)")
+    await _do_scan(
+        chat_id=query.message.chat_id,
+        context=context,
+        reply_fn=query.edit_message_text,
+    )
+
+
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/scan — manually trigger a live market scan."""
+    if not is_api_configured():
+        await update.message.reply_text(
+            "⚠️ TWELVE_DATA_API_KEY not configured.\n"
+            "Add it to Replit Secrets and restart the bot.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    msg = await update.message.reply_text("🔍 Scanning markets… please wait (up to 10 s)")
+    await _do_scan(
+        chat_id=update.effective_chat.id,
+        context=context,
+        reply_fn=msg.edit_text,
+    )
+
+
+async def cmd_setchat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/setchat — register this chat for auto-scan alerts and enable auto-scan."""
+    if not is_api_configured():
+        await update.message.reply_text(
+            "⚠️ Cannot register: TWELVE_DATA_API_KEY not configured.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    chat_id = update.effective_chat.id
+    add_alert_chat(chat_id)
+    set_setting("autoscan_enabled", "1")
+    await update.message.reply_text(
+        f"✅ Chat registered for auto-scan alerts.\n\n"
+        f"Chat ID:    {chat_id}\n"
+        f"Auto-scan:  ON (every 10 min)\n\n"
+        f"Qubit will post live signals here automatically.\n"
+        f"Use /autoscan off to stop.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def cmd_autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/autoscan on|off — toggle auto-scan for this chat."""
+    args = context.args or []
+    chat_id = update.effective_chat.id
+
+    if not args or args[0].lower() not in ("on", "off"):
+        status = "ON ✅" if get_setting("autoscan_enabled", "0") == "1" else "OFF 🔴"
+        chats = get_alert_chats()
+        await update.message.reply_text(
+            f"📡 Auto-Scan Status: {status}\n"
+            f"Registered chats: {len(chats)}\n"
+            f"Scan interval: every 10 minutes\n\n"
+            f"Usage:\n"
+            f"  /autoscan on  — enable & register this chat\n"
+            f"  /autoscan off — disable & unregister this chat\n\n"
+            f"Tip: /setchat does the same as /autoscan on",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    if args[0].lower() == "on":
+        if not is_api_configured():
+            await update.message.reply_text(
+                "⚠️ Cannot enable: TWELVE_DATA_API_KEY not configured.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        add_alert_chat(chat_id)
+        set_setting("autoscan_enabled", "1")
+        await update.message.reply_text(
+            "✅ Auto-Scan ENABLED\n\n"
+            "Qubit will scan all 4 pairs every 10 minutes.\n"
+            "Signals will be posted here automatically.\n\n"
+            "Use /autoscan off to stop.",
+            reply_markup=main_menu_keyboard(),
+        )
+    else:
+        remove_alert_chat(chat_id)
+        if not get_alert_chats():
+            set_setting("autoscan_enabled", "0")
+        await update.message.reply_text(
+            "🔴 Auto-Scan DISABLED\n\nNo more automatic signals for this chat.",
+            reply_markup=main_menu_keyboard(),
+        )
+
+
+async def handle_log_autosignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles 'Log as Paper Trade' button on a scan signal.
+    Callback data: logsig_{symbol}_{action}_{entry}_{sl}_{tp}_{conf}
+    Runs through QA validation + QR risk check before logging.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split("_")
+    try:
+        symbol     = parts[1]
+        action     = parts[2]
+        entry      = float(parts[3])
+        sl         = float(parts[4])
+        tp         = float(parts[5])
+        confidence = float(parts[6])
+    except (IndexError, ValueError):
+        await query.edit_message_text("⚠️ Could not parse signal data.", reply_markup=back_keyboard())
+        return
+
+    signal = Signal(
+        symbol=symbol,
+        direction=action,
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        confidence=confidence,
+    )
+
+    # Q Validation (QA)
+    validation = validate_signal(signal)
+    if not validation.valid:
+        await query.edit_message_text(
+            f"❌ Qubit Analytics (QA) — Signal Rejected\n\nReason: {validation.reason}",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    # Qubit Risk (QR)
+    bal = get_balance()
+    risk = check_risk(get_approved_count_today(), get_consecutive_losses(), bal)
+    if not risk.allowed:
+        await query.edit_message_text(
+            f"❌ Qubit Risk (QR) — Trade Blocked\n\nReason: {risk.reason}",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    rr = calculate_rr(signal)
+    signal_id = insert_trade(
+        symbol=signal.symbol,
+        direction=signal.direction,
+        entry=signal.entry,
+        stop_loss=signal.stop_loss,
+        take_profit=signal.take_profit,
+        confidence=signal.confidence,
+        status="approved",
+        reason="Auto-scan — Qubit Analytics (QA) ✅ | Qubit Risk (QR) ✅",
+        risk_amount=risk.risk_amount,
+        rr_ratio=rr,
+    )
+    pt_id = open_trade(
+        signal_id=signal_id,
+        symbol=signal.symbol,
+        direction=signal.direction,
+        entry=signal.entry,
+        stop_loss=signal.stop_loss,
+        take_profit=signal.take_profit,
+        risk_amount=risk.risk_amount,
+        rr_ratio=rr,
+    )
+
+    await query.edit_message_text(
+        f"✅ Paper Trade Opened — #{pt_id}\n"
+        f"{'━' * 28}\n"
+        f"Symbol:      {signal.symbol}\n"
+        f"Direction:   {signal.direction}\n"
+        f"Entry:       {signal.entry}\n"
+        f"SL:          {signal.stop_loss}\n"
+        f"TP:          {signal.take_profit}\n"
+        f"Confidence:  {signal.confidence:.0f}%\n"
+        f"{'━' * 28}\n"
+        f"Balance:     ${bal:,.2f}\n"
+        f"Risk Amount: ${risk.risk_amount:,.2f}\n"
+        f"R:R Ratio:   1:{rr}\n"
+        f"Mode:        Paper Trading",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JobQueue task — runs every 10 min, posts signals to registered chats."""
+    if not is_api_configured():
+        return
+    if get_setting("autoscan_enabled", "0") != "1":
+        return
+    chat_ids = get_alert_chats()
+    if not chat_ids:
+        return
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        results = await loop.run_in_executor(None, scan_markets)
+    except Exception as exc:
+        logger.warning("Auto-scan failed: %s", exc)
+        return
+
+    signals = [(sym, sig) for sym, sig in results if isinstance(sig, MarketSignal)]
+    if not signals:
+        return  # nothing actionable — stay silent
+
+    for chat_id in chat_ids:
+        for _, sig in signals:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=format_signal_message(sig, auto=True),
+                    reply_markup=logsig_keyboard(sig),
+                )
+            except Exception as exc:
+                logger.warning("Auto-scan send failed (chat %s): %s", chat_id, exc)
+
+
 # ── App entry ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -960,6 +1291,9 @@ def main() -> None:
     app.add_handler(CommandHandler("open_trades",   cmd_open_trades))
     app.add_handler(CommandHandler("daily_report",  cmd_daily_report))
     app.add_handler(CommandHandler("market_status", cmd_market_status))
+    app.add_handler(CommandHandler("scan",          cmd_scan))
+    app.add_handler(CommandHandler("setchat",       cmd_setchat))
+    app.add_handler(CommandHandler("autoscan",      cmd_autoscan))
 
     # Conversations
     app.add_handler(signal_conv)
@@ -978,10 +1312,18 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(do_reset,          pattern="^reset_confirm$"))
     app.add_handler(CallbackQueryHandler(show_help,         pattern="^help$"))
     app.add_handler(CallbackQueryHandler(toggle_filter,     pattern="^toggle_(trend|volatility|news)$"))
-    app.add_handler(CallbackQueryHandler(handle_close_trade,pattern=r"^close_\d+_(win|loss|breakeven)$"))
+    app.add_handler(CallbackQueryHandler(handle_close_trade,    pattern=r"^close_\d+_(win|loss|breakeven)$"))
+    app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^market_scan$"))
+    app.add_handler(CallbackQueryHandler(handle_log_autosignal, pattern="^logsig_"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
-    logger.info("Qubit v3.0 — Paper Trading Engine starting...")
+    # Auto-scan job — every 10 minutes, first run after 60 s
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(auto_scan_job, interval=600, first=60)
+    else:
+        logger.warning("JobQueue unavailable — install apscheduler>=3.6.3,<3.11 to enable auto-scan")
+
+    logger.info("Qubit v3.0 — Live Market Data + Auto-Scan active")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

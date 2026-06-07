@@ -288,6 +288,27 @@ def get_performance_stats() -> dict:
     }
 
 
+# ── Alert chat IDs (for auto-scan broadcasts) ─────────────────────────────────
+
+def add_alert_chat(chat_id: int) -> None:
+    current = get_setting("alert_chat_ids", "")
+    ids = [x for x in current.split(",") if x]
+    if str(chat_id) not in ids:
+        ids.append(str(chat_id))
+    set_setting("alert_chat_ids", ",".join(ids))
+
+
+def remove_alert_chat(chat_id: int) -> None:
+    current = get_setting("alert_chat_ids", "")
+    ids = [x for x in current.split(",") if x and x != str(chat_id)]
+    set_setting("alert_chat_ids", ",".join(ids))
+
+
+def get_alert_chats() -> list[int]:
+    current = get_setting("alert_chat_ids", "")
+    return [int(x) for x in current.split(",") if x]
+
+
 def get_daily_pnl_today() -> float:
     with get_conn() as conn:
         row = conn.execute(
