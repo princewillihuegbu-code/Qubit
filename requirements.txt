@@ -1,5 +1,4 @@
 python-telegram-bot
-MetaTrader5
 pandas
 numpy
 requests
