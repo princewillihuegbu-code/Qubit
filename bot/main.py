@@ -44,9 +44,17 @@ from database import (
 from validator import Signal, validate_signal
 from risk import check_risk, calculate_rr, risk_status_text, DEFAULT_BALANCE, get_derived
 from paper_engine import open_trade, close_trade, get_balance
-from market_data import is_api_configured
-from signal_engine import scan_markets, MarketSignal
+from market_data import (
+    is_api_configured, fetch_prices_batch, format_price, fetch_candles_batch,
+)
+from signal_engine import scan_markets, MarketSignal, get_technical_summary
 from chart import generate_equity_chart
+from watchlist import (
+    get_watchlist, add_to_watchlist, remove_from_watchlist,
+    reset_watchlist, group_by_market, get_market_type,
+    MARKET_ICONS, MARKET_LABELS, normalise as normalise_symbol,
+    DEFAULT_WATCHLIST,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -78,26 +86,30 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📡 Log Signal",    callback_data="log_signal"),
-            InlineKeyboardButton("🔍 Scan Markets",  callback_data="market_scan"),
+            InlineKeyboardButton("🔭 Scanner",       callback_data="scanner"),
         ],
         [
-            InlineKeyboardButton("🌍 Market",        callback_data="market_status"),
+            InlineKeyboardButton("📈 Markets",       callback_data="markets"),
+            InlineKeyboardButton("👁️ Watchlist",     callback_data="watchlist"),
+        ],
+        [
             InlineKeyboardButton("📋 Open Trades",   callback_data="open_trades"),
+            InlineKeyboardButton("📊 Performance",   callback_data="performance"),
         ],
         [
-            InlineKeyboardButton("📊 Performance",   callback_data="performance"),
             InlineKeyboardButton("📅 Daily Report",  callback_data="daily_report"),
+            InlineKeyboardButton("⚠️ Risk",           callback_data="risk"),
         ],
         [
             InlineKeyboardButton("✅ Approved",       callback_data="approved"),
-            InlineKeyboardButton("❌ Rejected",        callback_data="rejected"),
+            InlineKeyboardButton("❌ Rejected",       callback_data="rejected"),
         ],
         [
-            InlineKeyboardButton("💰 Balance",        callback_data="set_balance"),
-            InlineKeyboardButton("⚠️ Risk",            callback_data="risk"),
+            InlineKeyboardButton("💰 Balance",       callback_data="set_balance"),
+            InlineKeyboardButton("🌐 Filters",       callback_data="market_status"),
         ],
         [
-            InlineKeyboardButton("❓ Help",            callback_data="help"),
+            InlineKeyboardButton("❓ Help",           callback_data="help"),
         ],
     ])
 
@@ -956,6 +968,275 @@ async def cancel_signal_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 
+# ── Multi-market: Markets overview ────────────────────────────────────────────
+
+def _markets_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔭 Run Scanner", callback_data="scanner"),
+            InlineKeyboardButton("👁️ Watchlist",   callback_data="watchlist"),
+        ],
+        [InlineKeyboardButton("⬅️ Main Menu",      callback_data="main_menu")],
+    ])
+
+
+async def _do_markets(reply_fn, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import asyncio
+    wl     = get_watchlist()
+    loop   = asyncio.get_event_loop()
+    prices = await loop.run_in_executor(None, lambda: fetch_prices_batch(wl))
+
+    groups = group_by_market(wl)
+    lines: list[str] = [f"📈 QUBIT MARKETS\n{'━' * 28}\n"]
+
+    for mtype in ("forex", "stock", "crypto", "unknown"):
+        syms = groups.get(mtype, [])
+        if not syms:
+            continue
+        lines.append(f"{MARKET_ICONS[mtype]} {MARKET_LABELS[mtype]}")
+        for sym in syms:
+            p = prices.get(sym)
+            if isinstance(p, Exception):
+                lines.append(f"  {sym:<10}  —")
+            else:
+                lines.append(f"  {sym:<10}  {format_price(p, sym)}")
+        lines.append("")
+
+    lines.append(f"Symbols: {len(wl)}  |  Use 🔭 Scanner for signals")
+    text = "\n".join(lines).strip()
+    await reply_fn(text, reply_markup=_markets_keyboard())
+
+
+async def show_markets_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not is_api_configured():
+        await query.edit_message_text(
+            "⚠️ TWELVE_DATA_API_KEY not configured.",
+            reply_markup=back_keyboard(),
+        )
+        return
+    await query.edit_message_text("📈 Fetching live prices… please wait")
+    await _do_markets(query.edit_message_text, context)
+
+
+async def cmd_markets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_api_configured():
+        await update.message.reply_text(
+            "⚠️ TWELVE_DATA_API_KEY not configured.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    msg = await update.message.reply_text("📈 Fetching live prices… please wait")
+    await _do_markets(msg.edit_text, context)
+
+
+# ── Multi-market: Watchlist ────────────────────────────────────────────────────
+
+def _watchlist_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Reset to Defaults", callback_data="wl_reset")],
+        [
+            InlineKeyboardButton("📈 Markets",  callback_data="markets"),
+            InlineKeyboardButton("🔭 Scanner",  callback_data="scanner"),
+        ],
+        [InlineKeyboardButton("⬅️ Main Menu", callback_data="main_menu")],
+    ])
+
+
+async def _show_watchlist_text(send_fn) -> None:
+    wl     = get_watchlist()
+    groups = group_by_market(wl)
+    lines: list[str] = [f"👁️ WATCHLIST  ({len(wl)} symbols)\n{'━' * 28}\n"]
+
+    for mtype in ("forex", "stock", "crypto", "unknown"):
+        syms = groups.get(mtype, [])
+        if not syms:
+            continue
+        lines.append(f"{MARKET_ICONS[mtype]} {MARKET_LABELS[mtype]}")
+        lines.append("  " + "  •  ".join(syms))
+        lines.append("")
+
+    lines += [
+        "── Manage ──────────────────",
+        "/watchlist add SYMBOL",
+        "/watchlist remove SYMBOL",
+        "/watchlist reset",
+        "",
+        "Examples:",
+        "  /watchlist add MSFT",
+        "  /watchlist add SOLUSD",
+        "  /watchlist remove USDJPY",
+    ]
+    await send_fn("\n".join(lines), reply_markup=_watchlist_keyboard())
+
+
+async def show_watchlist_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await _show_watchlist_text(query.edit_message_text)
+
+
+async def do_wl_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    reset_watchlist()
+    await _show_watchlist_text(query.edit_message_text)
+
+
+async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args or []
+
+    if not args:
+        await _show_watchlist_text(update.message.reply_text)
+        return
+
+    sub = args[0].lower()
+
+    if sub == "reset":
+        reset_watchlist()
+        await update.message.reply_text(
+            "✅ Watchlist reset to defaults.\n\n"
+            + "  ".join(DEFAULT_WATCHLIST),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    if sub in ("add", "remove") and len(args) < 2:
+        await update.message.reply_text(
+            f"Usage: /watchlist {sub} SYMBOL\nExample: /watchlist {sub} MSFT",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    if sub == "add":
+        ok, msg = add_to_watchlist(args[1])
+        await update.message.reply_text(msg, reply_markup=main_menu_keyboard())
+        return
+
+    if sub == "remove":
+        ok, msg = remove_from_watchlist(args[1])
+        await update.message.reply_text(msg, reply_markup=main_menu_keyboard())
+        return
+
+    await _show_watchlist_text(update.message.reply_text)
+
+
+# ── Multi-market: Analyze ─────────────────────────────────────────────────────
+
+def format_analysis_text(symbol: str, summary: dict) -> str:
+    mtype = get_market_type(symbol)
+    icon  = MARKET_ICONS.get(mtype, "❓")
+    label = MARKET_LABELS.get(mtype, "Unknown")
+
+    trend_icon = "📈" if summary["trend"] == "bullish" else "📉"
+    rsi = summary["rsi"]
+    if rsi < 30:
+        rsi_label = "Oversold 🔴"
+    elif rsi < 40:
+        rsi_label = "Near Oversold"
+    elif rsi > 70:
+        rsi_label = "Overbought 🔴"
+    elif rsi > 60:
+        rsi_label = "Near Overbought ⚠️"
+    else:
+        rsi_label = "Neutral ✅"
+
+    sig = summary.get("signal")
+    text = (
+        f"🔬 ANALYSIS: {symbol}\n"
+        f"{'━' * 28}\n"
+        f"Price:        {format_price(summary['price'], symbol)}\n"
+        f"Market:       {icon} {label}\n\n"
+        f"── Technical Indicators ──\n"
+        f"EMA 20:       {summary['ema20']}\n"
+        f"EMA 50:       {summary['ema50']}\n"
+        f"Trend:        {trend_icon} {summary['crossover']}\n"
+        f"RSI (14):     {rsi} — {rsi_label}\n"
+        f"EMA Gap:      {summary['ema_sep']:.3f}%\n"
+        f"10-Bar High:  {summary['recent_high']}\n"
+        f"10-Bar Low:   {summary['recent_low']}\n\n"
+    )
+    if sig:
+        action_icon = "📈 BUY" if sig.action == "BUY" else "📉 SELL"
+        cross = "Fresh crossover ✅" if sig.crossover else "Trend continuation"
+        text += (
+            f"── Signal ────────────────\n"
+            f"Direction:    {action_icon}\n"
+            f"Confidence:   {sig.confidence:.0f}%\n"
+            f"Entry:        {sig.entry}\n"
+            f"SL:           {sig.sl}\n"
+            f"TP:           {sig.tp}\n"
+            f"Setup:        {cross}"
+        )
+    else:
+        text += (
+            "── Signal ────────────────\n"
+            "No clear signal at this time.\n"
+            "Market is neutral / consolidating."
+        )
+    return text
+
+
+async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_api_configured():
+        await update.message.reply_text(
+            "⚠️ TWELVE_DATA_API_KEY not configured.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    args = context.args or []
+    if not args:
+        wl = get_watchlist()
+        ex = wl[0] if wl else "EURUSD"
+        await update.message.reply_text(
+            f"🔬 Qubit Analytics — Symbol Analysis\n\n"
+            f"Usage: /analyze SYMBOL\n\n"
+            f"Examples:\n"
+            f"  /analyze {ex}\n"
+            f"  /analyze AAPL\n"
+            f"  /analyze BTCUSD\n\n"
+            f"Watchlist: {', '.join(wl)}",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    symbol = normalise_symbol(args[0])
+    msg = await update.message.reply_text(
+        f"🔬 Analyzing {symbol}… please wait (up to 10 s)"
+    )
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        batch = await loop.run_in_executor(
+            None, lambda: fetch_candles_batch([symbol], outputsize=60)
+        )
+        candles = batch[symbol]
+        if isinstance(candles, Exception):
+            raise candles
+    except Exception as exc:
+        await msg.edit_text(
+            f"❌ Could not fetch data for {symbol}\n\n{exc}",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    summary = get_technical_summary(symbol, candles)
+    if summary is None:
+        await msg.edit_text(
+            f"⚠️ Insufficient data for {symbol} — need at least 52 candles.",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    text = format_analysis_text(symbol, summary)
+    sig  = summary.get("signal")
+    keyboard = logsig_keyboard(sig) if sig else back_keyboard()
+    await msg.edit_text(text, reply_markup=keyboard)
+
+
 # ── Market scan helpers ────────────────────────────────────────────────────────
 
 def _sig_callback(sig: MarketSignal) -> str:
@@ -1349,6 +1630,10 @@ def main() -> None:
     app.add_handler(CommandHandler("daily_report",  cmd_daily_report))
     app.add_handler(CommandHandler("market_status", cmd_market_status))
     app.add_handler(CommandHandler("scan",          cmd_scan))
+    app.add_handler(CommandHandler("scanner",       cmd_scan))       # alias
+    app.add_handler(CommandHandler("markets",       cmd_markets))
+    app.add_handler(CommandHandler("watchlist",     cmd_watchlist))
+    app.add_handler(CommandHandler("analyze",       cmd_analyze))
     app.add_handler(CommandHandler("setchat",       cmd_setchat))
     app.add_handler(CommandHandler("autoscan",      cmd_autoscan))
     app.add_handler(CommandHandler("chart",         cmd_chart))
@@ -1371,7 +1656,10 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(show_help,         pattern="^help$"))
     app.add_handler(CallbackQueryHandler(toggle_filter,     pattern="^toggle_(trend|volatility|news)$"))
     app.add_handler(CallbackQueryHandler(handle_close_trade,    pattern=r"^close_\d+_(win|loss|breakeven)$"))
-    app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^market_scan$"))
+    app.add_handler(CallbackQueryHandler(show_markets_btn,      pattern="^markets$"))
+    app.add_handler(CallbackQueryHandler(show_watchlist_btn,    pattern="^watchlist$"))
+    app.add_handler(CallbackQueryHandler(do_wl_reset,           pattern="^wl_reset$"))
+    app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^(market_scan|scanner)$"))
     app.add_handler(CallbackQueryHandler(handle_log_autosignal, pattern="^logsig_"))
     app.add_handler(CallbackQueryHandler(show_chart_btn,        pattern="^equity_chart$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
