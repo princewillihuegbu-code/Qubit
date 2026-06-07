@@ -113,8 +113,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     active = [k for k, v in filters_state.items() if v]
     market_line = f"⚠️ Market Filters Active: {', '.join(active)}" if active else "🟢 Market: Clear"
     await update.message.reply_text(
-        f"Welcome to Q AI.\n"
-        f"Quantum Execution Intelligence System.\n"
+        f"Welcome to Qubit.\n"
+        f"Analyze. Validate. Execute.\n"
         f"Version 3.0 — Paper Trading Engine Active\n\n"
         f"Balance: ${bal:,.2f}\n"
         f"{market_line}",
@@ -126,7 +126,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "Q AI v3.0 — Main Menu", reply_markup=main_menu_keyboard()
+        "Qubit v3.0 — Main Menu", reply_markup=main_menu_keyboard()
     )
 
 
@@ -509,7 +509,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return "N/A" if d["total"] == 0 else f"{(d['approved'] / d['total']) * 100:.1f}%"
 
     text = (
-        f"📊 Q AI — Statistics\n{'─' * 28}\n\n"
+        f"📊 Qubit — Statistics\n{'─' * 28}\n\n"
         f"Today ({date.today()})\n"
         f"  Total:     {today['total']}\n"
         f"  Approved:  {today['approved']}  ✅\n"
@@ -559,7 +559,7 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bal = current_balance()
     rpt, mdl = get_derived(bal)
     text = (
-        "Q AI v3.0 — Help\n\n"
+        "Qubit v3.0 — Help\n\n"
         "📡 Log Signal — Submit a 6-field signal\n"
         "🌍 Market — Toggle market filters\n"
         "📋 Open Trades — View & close open positions\n"
@@ -570,8 +570,8 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⚠️ Risk — Risk engine status\n\n"
         "Signal Flow:\n"
         "  1. Market filters checked first\n"
-        "  2. Q Validation Layer\n"
-        "  3. Q Risk Engine\n"
+        "  2. Qubit Analytics (QA)\n"
+        "  3. Qubit Risk (QR)\n"
         "  4. Paper trade created on approval\n\n"
         f"Risk Engine (Balance: ${bal:,.2f})\n"
         f"  • ${rpt:,.2f} per trade (1%)\n"
@@ -639,7 +639,7 @@ async def balance_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         f"New Balance:     ${new_bal:,.2f}\n\n"
         f"Risk Per Trade:  ${rpt:,.2f} (1%)\n"
         f"Max Daily Loss:  ${mdl:,.2f} (5%)\n\n"
-        f"Q Risk Engine recalculated.",
+        f"Qubit Risk (QR) recalculated.",
         reply_markup=back_keyboard(),
     )
     return ConversationHandler.END
@@ -649,7 +649,7 @@ async def cancel_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "Cancelled.\n\nQ AI v3.0 — Main Menu",
+        "Cancelled.\n\nQubit v3.0 — Main Menu",
         reply_markup=main_menu_keyboard(),
     )
     return ConversationHandler.END
@@ -672,7 +672,7 @@ async def signal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
     await query.edit_message_text(
-        "📡 Q Signal Logger — Step 1 of 6\n\nEnter the symbol (e.g. AAPL, TSLA, BTCUSD):",
+        "📡 Signal Logger — Step 1 of 6\n\nEnter the symbol (e.g. AAPL, TSLA, BTCUSD):",
         reply_markup=cancel_keyboard(),
     )
     return SIGNAL_SYMBOL
@@ -681,7 +681,7 @@ async def signal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def signal_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["symbol"] = update.message.text.strip().upper()
     await update.message.reply_text(
-        f"📡 Q Signal Logger — Step 2 of 6\n\nSymbol: {context.user_data['symbol']}\n\nChoose direction:",
+        f"📡 Signal Logger — Step 2 of 6\n\nSymbol: {context.user_data['symbol']}\n\nChoose direction:",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📈 BUY",  callback_data="dir_BUY"),
@@ -698,7 +698,7 @@ async def signal_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     context.user_data["direction"] = query.data.split("_")[1]
     await query.edit_message_text(
-        f"📡 Q Signal Logger — Step 3 of 6\n\n"
+        f"📡 Signal Logger — Step 3 of 6\n\n"
         f"Symbol: {context.user_data['symbol']} | {context.user_data['direction']}\n\nEnter Entry Price:",
         reply_markup=cancel_keyboard(),
     )
@@ -723,7 +723,7 @@ async def signal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return SIGNAL_ENTRY
     d = context.user_data
     await update.message.reply_text(
-        f"📡 Q Signal Logger — Step 4 of 6\n\n"
+        f"📡 Signal Logger — Step 4 of 6\n\n"
         f"Symbol: {d['symbol']} | {d['direction']}\nEntry: {d['entry']}\n\nEnter Stop Loss:",
         reply_markup=cancel_keyboard(),
     )
@@ -738,7 +738,7 @@ async def signal_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return SIGNAL_SL
     d = context.user_data
     await update.message.reply_text(
-        f"📡 Q Signal Logger — Step 5 of 6\n\n"
+        f"📡 Signal Logger — Step 5 of 6\n\n"
         f"Symbol: {d['symbol']} | {d['direction']}\nEntry: {d['entry']} | SL: {d['stop_loss']}\n\nEnter Take Profit:",
         reply_markup=cancel_keyboard(),
     )
@@ -753,7 +753,7 @@ async def signal_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return SIGNAL_TP
     d = context.user_data
     await update.message.reply_text(
-        f"📡 Q Signal Logger — Step 6 of 6\n\n"
+        f"📡 Signal Logger — Step 6 of 6\n\n"
         f"Symbol: {d['symbol']} | {d['direction']}\n"
         f"Entry: {d['entry']} | SL: {d['stop_loss']} | TP: {d['take_profit']}\n\nEnter Confidence Score (0–100):",
         reply_markup=cancel_keyboard(),
@@ -781,7 +781,7 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     context.user_data.clear()
 
-    # Layer 1 — Q Validation
+    # Layer 1 — Qubit Analytics (QA)
     validation = validate_signal(signal)
     if not validation.valid:
         insert_trade(
@@ -801,13 +801,13 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"SL:         {signal.stop_loss}\n"
             f"TP:         {signal.take_profit}\n"
             f"Confidence: {signal.confidence:.0f}%\n\n"
-            f"Layer:   Q Validation\n"
+            f"Layer:   Qubit Analytics (QA)\n"
             f"Reason:  {validation.reason}",
             reply_markup=back_keyboard(),
         )
         return ConversationHandler.END
 
-    # Layer 2 — Q Risk Engine
+    # Layer 2 — Qubit Risk (QR)
     bal = current_balance()
     risk = check_risk(get_approved_count_today(), get_consecutive_losses(), bal)
     if not risk.allowed:
@@ -828,7 +828,7 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"SL:         {signal.stop_loss}\n"
             f"TP:         {signal.take_profit}\n"
             f"Confidence: {signal.confidence:.0f}%\n\n"
-            f"Layer:   Q Risk Engine\n"
+            f"Layer:   Qubit Risk (QR)\n"
             f"Reason:  {risk.reason}",
             reply_markup=back_keyboard(),
         )
@@ -874,7 +874,7 @@ async def cancel_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.answer()
     context.user_data.clear()
     await query.edit_message_text(
-        "Signal cancelled.\n\nQ AI v3.0 — Main Menu",
+        "Signal cancelled.\n\nQubit v3.0 — Main Menu",
         reply_markup=main_menu_keyboard(),
     )
     return ConversationHandler.END
@@ -885,7 +885,7 @@ async def cancel_signal_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     context.user_data.clear()
     await query.edit_message_text(
-        "Signal cancelled.\n\nQ AI v3.0 — Main Menu",
+        "Signal cancelled.\n\nQubit v3.0 — Main Menu",
         reply_markup=main_menu_keyboard(),
     )
     return ConversationHandler.END
@@ -981,7 +981,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_close_trade,pattern=r"^close_\d+_(win|loss|breakeven)$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
-    logger.info("Q AI v3.0 — Paper Trading Engine starting...")
+    logger.info("Qubit v3.0 — Paper Trading Engine starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

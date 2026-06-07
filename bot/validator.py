@@ -50,4 +50,4 @@ def validate_signal(signal: Signal) -> ValidationResult:
                 f"Invalid structure: Take Profit ({signal.take_profit}) must be below Entry ({signal.entry}) for a SELL trade"
             )
 
-    return ValidationResult(True, "Signal passed all Q Validation checks")
+    return ValidationResult(True, "Signal passed all Qubit Analytics (QA) checks")

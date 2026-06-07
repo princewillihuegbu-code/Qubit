@@ -41,20 +41,20 @@ def check_risk(approved_today: int, consecutive_losses: int, balance: float) -> 
     if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
         return RiskResult(
             False,
-            f"Q Risk Engine: Trading paused — {MAX_CONSECUTIVE_LOSSES} consecutive losses detected"
+            f"Qubit Risk (QR): Trading paused — {MAX_CONSECUTIVE_LOSSES} consecutive losses detected"
         )
 
     if approved_today >= MAX_OPEN_TRADES:
         return RiskResult(
             False,
-            f"Q Risk Engine: Maximum open trades ({MAX_OPEN_TRADES}) already reached for today"
+            f"Qubit Risk (QR): Maximum open trades ({MAX_OPEN_TRADES}) already reached for today"
         )
 
     committed = approved_today * risk_per_trade
     if committed >= max_daily_loss:
         return RiskResult(
             False,
-            f"Q Risk Engine: Daily loss limit of ${max_daily_loss:,.0f} (5%) has been reached"
+            f"Qubit Risk (QR): Daily loss limit of ${max_daily_loss:,.0f} (5%) has been reached"
         )
 
     return RiskResult(True, "Risk limits OK", risk_amount=risk_per_trade)
@@ -77,7 +77,7 @@ def risk_status_text(approved_today: int, consecutive_losses: int, balance: floa
     )
 
     lines = [
-        "⚠️ Q Risk Engine — Status",
+        "⚠️ Qubit Risk (QR) — Status",
         "─" * 30,
         "",
         f"Balance:             ${balance:,.2f}",
