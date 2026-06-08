@@ -1,5 +1,5 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
+import threading, os
 
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -10,8 +10,7 @@ class Health(BaseHTTPRequestHandler):
         pass
 
 def start():
-    port = int(__import__("os").environ.get("PORT", 8080))
-    threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", port), Health).serve_forever(),
-        daemon=True,
-    ).start()
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Health)
+    print(f"Health server on port {port}")  # ← helps Render detect it
+    threading.Thread(target=server.serve_forever, daemon=True).start()
