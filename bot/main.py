@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 load_dotenv()
 from server import start as start_server
 
+from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_price, is_mt5_connected
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from datetime import date
@@ -497,6 +499,56 @@ async def cmd_market_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "Use the 🌍 Market button to toggle filters."
     )
     await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+
+
+async def cmd_mt5(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = get_mt5_status()
+    if data.get("error"):
+        await update.message.reply_text(f"❌ MT5 Bridge\n\n{data['error']}")
+        return
+    await update.message.reply_text(
+        f"✅ MT5 Connected\n"
+        f"Server: {data.get('server')}\n"
+        f"Login:  {data.get('login')}"
+    )
+
+
+async def cmd_mt5account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = get_mt5_account()
+    if data.get("error"):
+        await update.message.reply_text(f"❌ MT5 Account Error\n\n{data['error']}")
+        return
+    await update.message.reply_text(
+        f"💼 MT5 Account\n{'─'*26}\n"
+        f"Name:         {data['name']}\n"
+        f"Server:       {data['server']}\n"
+        f"Balance:      ${data['balance']:,.2f}\n"
+        f"Equity:       ${data['equity']:,.2f}\n"
+        f"Margin:       ${data['margin']:,.2f}\n"
+        f"Free Margin:  ${data['free_margin']:,.2f}\n"
+        f"Profit:       ${data['profit']:,.2f}\n"
+        f"Leverage:     1:{data['leverage']}\n"
+        f"Currency:     {data['currency']}"
+    )
+
+
+async def cmd_mt5positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = get_mt5_positions()
+    if data.get("error"):
+        await update.message.reply_text(f"❌ MT5 Error\n\n{data['error']}")
+        return
+    positions = data.get("positions", [])
+    if not positions:
+        await update.message.reply_text("📋 MT5 Positions\n\nNo open positions.")
+        return
+    lines = [f"📋 MT5 Positions — {len(positions)}\n"]
+    for p in positions:
+        lines.append(
+            f"#{p['ticket']} {p['type']} {p['symbol']}\n"
+            f"   Vol: {p['volume']} | Open: {p['open_price']} → {p['current_price']}\n"
+            f"   SL: {p['sl']} | TP: {p['tp']} | P&L: ${p['profit']:,.2f}\n"
+        )
+    await update.message.reply_text("\n".join(lines))
 
 
 # ── Risk ───────────────────────────────────────────────────────────────────────
@@ -1637,6 +1689,9 @@ def main() -> None:
     app.add_handler(CommandHandler("open_trades",   cmd_open_trades))
     app.add_handler(CommandHandler("daily_report",  cmd_daily_report))
     app.add_handler(CommandHandler("market_status", cmd_market_status))
+    app.add_handler(CommandHandler("mt5",          cmd_mt5))
+    app.add_handler(CommandHandler("mt5account",   cmd_mt5account))
+    app.add_handler(CommandHandler("mt5positions", cmd_mt5positions))
     app.add_handler(CommandHandler("scan",          cmd_scan))
     app.add_handler(CommandHandler("scanner",       cmd_scan))       # alias
     app.add_handler(CommandHandler("markets",       cmd_markets))
