@@ -1736,7 +1736,10 @@ def main() -> None:
         logger.warning("JobQueue unavailable — install apscheduler>=3.6.3,<3.11 to enable auto-scan")
 
     logger.info("Qubit v3.0 — Live Market Data + Auto-Scan active")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
