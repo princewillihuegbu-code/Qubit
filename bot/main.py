@@ -8,7 +8,7 @@ import asyncio
 
 from dotenv import load_dotenv
 load_dotenv()
-from server import start as start_server
+
 
 from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_price, is_mt5_connected
 
@@ -1622,6 +1622,7 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── App entry ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    start_server() 
     # Fix for Python 3.14+ — no default event loop
     if sys.version_info >= (3, 14):
         loop = asyncio.new_event_loop()
