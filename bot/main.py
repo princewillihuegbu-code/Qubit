@@ -1744,4 +1744,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Exception as e:
+            logger.error("Bot crashed: %s — restarting in 5s", e)
+            import time
+            time.sleep(5)
