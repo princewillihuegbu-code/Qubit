@@ -52,7 +52,7 @@ from database import (
 )
 from validator import Signal, validate_signal
 from risk import check_risk, calculate_rr, risk_status_text, DEFAULT_BALANCE, get_derived
-from paper_engine import open_trade, close_trade, get_balance
+from paper_engine import open_trade, close_trade, get_balance, get_live_balance
 from market_data import (
     is_api_configured, fetch_prices_batch, format_price, fetch_candles_batch,
 )
@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 
 def current_balance() -> float:
-    return get_balance()
+    return get_live_balance()
 
 
 def fmt_pnl(pnl: float) -> str:
@@ -118,6 +118,11 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🌐 Filters",       callback_data="market_status"),
         ],
         [
+            InlineKeyboardButton("🔌 MT5 Status",    callback_data="mt5_status"),
+            InlineKeyboardButton("💼 MT5 Account",   callback_data="mt5_account"),
+        ],
+        [
+            InlineKeyboardButton("📋 MT5 Positions", callback_data="mt5_positions"),
             InlineKeyboardButton("❓ Help",           callback_data="help"),
         ],
     ])
@@ -551,6 +556,61 @@ async def cmd_mt5positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"   SL: {p['sl']} | TP: {p['tp']} | P&L: ${p['profit']:,.2f}\n"
         )
     await update.message.reply_text("\n".join(lines))
+
+
+async def mt5_status_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = get_mt5_status()
+    if data.get("error"):
+        text = f"❌ MT5 Bridge\n\n{data['error']}"
+    else:
+        text = f"✅ MT5 Connected\nServer: {data.get('server')}\nLogin:  {data.get('login')}"
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def mt5_account_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = get_mt5_account()
+    if data.get("error"):
+        text = f"❌ MT5 Account Error\n\n{data['error']}"
+    else:
+        text = (
+            f"💼 MT5 Account\n{'─'*26}\n"
+            f"Name:         {data['name']}\n"
+            f"Server:       {data['server']}\n"
+            f"Balance:      ${data['balance']:,.2f}\n"
+            f"Equity:       ${data['equity']:,.2f}\n"
+            f"Margin:       ${data['margin']:,.2f}\n"
+            f"Free Margin:  ${data['free_margin']:,.2f}\n"
+            f"Profit:       ${data['profit']:,.2f}\n"
+            f"Leverage:     1:{data['leverage']}\n"
+            f"Currency:     {data['currency']}"
+        )
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def mt5_positions_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = get_mt5_positions()
+    if data.get("error"):
+        text = f"❌ MT5 Error\n\n{data['error']}"
+    else:
+        positions = data.get("positions", [])
+        if not positions:
+            text = "📋 MT5 Positions\n\nNo open positions."
+        else:
+            lines = [f"📋 MT5 Positions — {len(positions)}\n"]
+            for p in positions:
+                lines.append(
+                    f"#{p['ticket']} {p['type']} {p['symbol']}\n"
+                    f"   Vol: {p['volume']} | Open: {p['open_price']} → {p['current_price']}\n"
+                    f"   SL: {p['sl']} | TP: {p['tp']} | P&L: ${p['profit']:,.2f}\n"
+                )
+            text = "\n".join(lines)
+    await query.edit_message_text(text, reply_markup=back_keyboard())
 
 
 # ── Risk ───────────────────────────────────────────────────────────────────────
@@ -1728,6 +1788,9 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^(market_scan|scanner)$"))
     app.add_handler(CallbackQueryHandler(handle_log_autosignal, pattern="^logsig_"))
     app.add_handler(CallbackQueryHandler(show_chart_btn,        pattern="^equity_chart$"))
+    app.add_handler(CallbackQueryHandler(mt5_status_btn,    pattern="^mt5_status$"))
+    app.add_handler(CallbackQueryHandler(mt5_account_btn,   pattern="^mt5_account$"))
+    app.add_handler(CallbackQueryHandler(mt5_positions_btn, pattern="^mt5_positions$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
     # Auto-scan job — every 10 minutes, first run after 60 s

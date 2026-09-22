@@ -7,6 +7,7 @@ from database import (
     set_setting,
 )
 from risk import DEFAULT_BALANCE
+from mt5_client import get_mt5_account, is_mt5_connected
 
 
 def get_balance() -> float:
@@ -15,6 +16,15 @@ def get_balance() -> float:
         return float(raw)
     except ValueError:
         return DEFAULT_BALANCE
+
+
+def get_live_balance() -> float:
+    """MT5 balance if bridge connected, else paper trading balance."""
+    if is_mt5_connected():
+        acc = get_mt5_account()
+        if "balance" in acc:
+            return float(acc["balance"])
+    return get_balance()
 
 
 def open_trade(
