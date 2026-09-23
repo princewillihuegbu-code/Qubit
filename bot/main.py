@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_orders, get_mt5_price, is_mt5_connected
+from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_orders, get_mt5_price, place_mt5_order, is_mt5_connected
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -38,6 +38,8 @@ from database import (
     get_all_time_stats,
     get_setting,
     set_setting,
+    get_execution_mode,
+    set_execution_mode,
     get_market_filters,
     toggle_market_filter,
     check_market_filters,
@@ -118,14 +120,15 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🌐 Filters",       callback_data="market_status"),
         ],
         [
+            InlineKeyboardButton("� Execution",     callback_data="toggle_execution"),
             InlineKeyboardButton("🔌 MT5 Status",    callback_data="mt5_status"),
+        ],
+        [
             InlineKeyboardButton("💼 MT5 Account",   callback_data="mt5_account"),
-        ],
-        [
             InlineKeyboardButton("📋 MT5 Positions", callback_data="mt5_positions"),
-            InlineKeyboardButton("🕓 MT5 Orders",    callback_data="mt5_orders"),
         ],
         [
+            InlineKeyboardButton("🕓 MT5 Orders",    callback_data="mt5_orders"),
             InlineKeyboardButton("❓ Help",           callback_data="help"),
         ],
     ])
@@ -640,6 +643,38 @@ async def mt5_orders_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.edit_message_text(text, reply_markup=back_keyboard())
 
 
+async def toggle_execution_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    current = get_execution_mode()
+    if current == "paper":
+        await query.edit_message_text(
+            "⚠️ Switch to LIVE execution?\n\n"
+            "Approved signals will place REAL trades on your MT5 account "
+            "using real money. This cannot be undone per-trade.\n\n"
+            "Confirm?",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Yes, go LIVE", callback_data="confirm_live"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="main_menu"),
+                ]
+            ]),
+        )
+    else:
+        set_execution_mode("paper")
+        await query.edit_message_text("🟢 Execution mode: PAPER (safe)", reply_markup=back_keyboard())
+
+
+async def confirm_live_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    set_execution_mode("live")
+    await query.edit_message_text(
+        "🔴 Execution mode: LIVE\n\nApproved signals will now place real MT5 trades.",
+        reply_markup=back_keyboard(),
+    )
+
+
 # ── Risk ───────────────────────────────────────────────────────────────────────
 
 async def show_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1071,7 +1106,15 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         entry=signal.entry, stop_loss=signal.stop_loss, take_profit=signal.take_profit,
         risk_amount=risk.risk_amount, rr_ratio=rr,
     )
-    await update.message.reply_text(
+    live_note = ""
+    if get_execution_mode() == "live":
+        lot_size = 0.01
+        result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
+        if "error" in result:
+            live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+        else:
+            live_note = f"\n\n🔴 LIVE order placed — Ticket #{result['ticket']} @ {result['price']}"
+    reply_text = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"✅  APPROVED SIGNAL\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1086,9 +1129,9 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"R:R Ratio:   1:{rr}\n\n"
         f"📋 Paper Trade #{pt_id} opened.\n"
         f"Close it via 📋 Open Trades.\n\n"
-        f"Mode: Paper Trading",
-        reply_markup=back_keyboard(),
+        f"Mode: {'Live Trading' if get_execution_mode() == 'live' else 'Paper Trading'}"
     )
+    await update.message.reply_text(reply_text + live_note, reply_markup=back_keyboard())
     return ConversationHandler.END
 
 
@@ -1654,6 +1697,15 @@ async def handle_log_autosignal(update: Update, context: ContextTypes.DEFAULT_TY
         rr_ratio=rr,
     )
 
+    live_note = ""
+    if get_execution_mode() == "live":
+        lot_size = 0.01
+        result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
+        if "error" in result:
+            live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+        else:
+            live_note = f"\n\n🔴 LIVE order placed — Ticket #{result['ticket']} @ {result['price']}"
+
     await query.edit_message_text(
         f"✅ Paper Trade Opened — #{pt_id}\n"
         f"{'━' * 28}\n"
@@ -1667,7 +1719,8 @@ async def handle_log_autosignal(update: Update, context: ContextTypes.DEFAULT_TY
         f"Balance:     ${bal:,.2f}\n"
         f"Risk Amount: ${risk.risk_amount:,.2f}\n"
         f"R:R Ratio:   1:{rr}\n"
-        f"Mode:        Paper Trading",
+        f"Mode:        {'Live Trading' if get_execution_mode() == 'live' else 'Paper Trading'}"
+        f"{live_note}",
         reply_markup=back_keyboard(),
     )
 
@@ -1815,10 +1868,12 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(show_scan_btn,         pattern="^(market_scan|scanner)$"))
     app.add_handler(CallbackQueryHandler(handle_log_autosignal, pattern="^logsig_"))
     app.add_handler(CallbackQueryHandler(show_chart_btn,        pattern="^equity_chart$"))
-    app.add_handler(CallbackQueryHandler(mt5_status_btn,    pattern="^mt5_status$"))
-    app.add_handler(CallbackQueryHandler(mt5_account_btn,   pattern="^mt5_account$"))
-    app.add_handler(CallbackQueryHandler(mt5_positions_btn, pattern="^mt5_positions$"))
-    app.add_handler(CallbackQueryHandler(mt5_orders_btn,    pattern="^mt5_orders$"))
+    app.add_handler(CallbackQueryHandler(mt5_status_btn,      pattern="^mt5_status$"))
+    app.add_handler(CallbackQueryHandler(mt5_account_btn,     pattern="^mt5_account$"))
+    app.add_handler(CallbackQueryHandler(mt5_positions_btn,   pattern="^mt5_positions$"))
+    app.add_handler(CallbackQueryHandler(mt5_orders_btn,      pattern="^mt5_orders$"))
+    app.add_handler(CallbackQueryHandler(toggle_execution_mode, pattern="^toggle_execution$"))
+    app.add_handler(CallbackQueryHandler(confirm_live_mode,   pattern="^confirm_live$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
     # Auto-scan job — every 10 minutes, first run after 60 s

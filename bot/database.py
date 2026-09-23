@@ -153,6 +153,14 @@ def set_setting(key: str, value: str) -> None:
         )
 
 
+def get_execution_mode() -> str:
+    return get_setting("execution_mode", "paper")
+
+
+def set_execution_mode(mode: str) -> None:
+    set_setting("execution_mode", mode)
+
+
 # ── Market filters (stored in settings) ───────────────────────────────────────
 
 FILTER_KEYS = {

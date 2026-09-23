@@ -24,5 +24,21 @@ def get_mt5_positions() -> dict: return _get("/positions")
 def get_mt5_orders() -> dict: return _get("/orders")
 def get_mt5_price(symbol: str) -> dict: return _get(f"/price/{symbol}")
 
+def place_mt5_order(symbol: str, direction: str, volume: float, sl: float = 0, tp: float = 0) -> dict:
+    if not MT5_BRIDGE_URL:
+        return {"error": "MT5_BRIDGE_URL not configured"}
+    try:
+        headers = {"X-API-Key": os.environ.get("BRIDGE_API_KEY", "")}
+        r = requests.post(
+            f"{MT5_BRIDGE_URL}/order",
+            json={"symbol": symbol, "direction": direction, "volume": volume, "sl": sl, "tp": tp},
+            headers=headers, timeout=15,
+        )
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        return {"error": "MT5 bridge unreachable"}
+    except Exception as e:
+        return {"error": str(e)}
+
 def is_mt5_connected() -> bool:
     return get_mt5_status().get("connected", False)
