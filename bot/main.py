@@ -11,6 +11,7 @@ load_dotenv()
 
 
 from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_orders, get_mt5_price, place_mt5_order, is_mt5_connected
+from lot_sizing import calculate_lot_size
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -1108,12 +1109,15 @@ async def signal_confidence(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     live_note = ""
     if get_execution_mode() == "live":
-        lot_size = 0.01
-        result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
-        if "error" in result:
-            live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+        lot_size, size_err = calculate_lot_size(signal.symbol, risk.risk_amount, signal.entry, signal.stop_loss)
+        if lot_size is None:
+            live_note = f"\n\n🔴 LIVE order SKIPPED: {size_err}"
         else:
-            live_note = f"\n\n🔴 LIVE order placed — Ticket #{result['ticket']} @ {result['price']}"
+            result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
+            if "error" in result:
+                live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+            else:
+                live_note = f"\n\n🔴 LIVE order placed — {lot_size} lots — Ticket #{result['ticket']} @ {result['price']}"
     reply_text = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"✅  APPROVED SIGNAL\n"
@@ -1699,12 +1703,15 @@ async def handle_log_autosignal(update: Update, context: ContextTypes.DEFAULT_TY
 
     live_note = ""
     if get_execution_mode() == "live":
-        lot_size = 0.01
-        result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
-        if "error" in result:
-            live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+        lot_size, size_err = calculate_lot_size(signal.symbol, risk.risk_amount, signal.entry, signal.stop_loss)
+        if lot_size is None:
+            live_note = f"\n\n🔴 LIVE order SKIPPED: {size_err}"
         else:
-            live_note = f"\n\n🔴 LIVE order placed — Ticket #{result['ticket']} @ {result['price']}"
+            result = place_mt5_order(signal.symbol, signal.direction, lot_size, signal.stop_loss, signal.take_profit)
+            if "error" in result:
+                live_note = f"\n\n🔴 LIVE order FAILED: {result['error']}"
+            else:
+                live_note = f"\n\n🔴 LIVE order placed — {lot_size} lots — Ticket #{result['ticket']} @ {result['price']}"
 
     await query.edit_message_text(
         f"✅ Paper Trade Opened — #{pt_id}\n"

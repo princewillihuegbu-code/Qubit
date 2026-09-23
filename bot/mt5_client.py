@@ -22,6 +22,7 @@ def get_mt5_status() -> dict:   return _get("/status")
 def get_mt5_account() -> dict:  return _get("/account")
 def get_mt5_positions() -> dict: return _get("/positions")
 def get_mt5_orders() -> dict: return _get("/orders")
+def get_mt5_symbol_info(symbol: str) -> dict: return _get(f"/symbol_info/{symbol}")
 def get_mt5_price(symbol: str) -> dict: return _get(f"/price/{symbol}")
 
 def place_mt5_order(symbol: str, direction: str, volume: float, sl: float = 0, tp: float = 0) -> dict:
