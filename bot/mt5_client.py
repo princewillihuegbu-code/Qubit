@@ -21,6 +21,7 @@ def _get(path: str) -> dict:
 def get_mt5_status() -> dict:   return _get("/status")
 def get_mt5_account() -> dict:  return _get("/account")
 def get_mt5_positions() -> dict: return _get("/positions")
+def get_mt5_orders() -> dict: return _get("/orders")
 def get_mt5_price(symbol: str) -> dict: return _get(f"/price/{symbol}")
 
 def is_mt5_connected() -> bool:

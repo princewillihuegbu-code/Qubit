@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_price, is_mt5_connected
+from mt5_client import get_mt5_status, get_mt5_account, get_mt5_positions, get_mt5_orders, get_mt5_price, is_mt5_connected
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -123,6 +123,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📋 MT5 Positions", callback_data="mt5_positions"),
+            InlineKeyboardButton("🕓 MT5 Orders",    callback_data="mt5_orders"),
+        ],
+        [
             InlineKeyboardButton("❓ Help",           callback_data="help"),
         ],
     ])
@@ -533,6 +536,7 @@ async def cmd_mt5account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Equity:       ${data['equity']:,.2f}\n"
         f"Margin:       ${data['margin']:,.2f}\n"
         f"Free Margin:  ${data['free_margin']:,.2f}\n"
+        f"Margin Level: {data['margin_level']:.2f}%\n"
         f"Profit:       ${data['profit']:,.2f}\n"
         f"Leverage:     1:{data['leverage']}\n"
         f"Currency:     {data['currency']}"
@@ -584,6 +588,7 @@ async def mt5_account_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"Equity:       ${data['equity']:,.2f}\n"
             f"Margin:       ${data['margin']:,.2f}\n"
             f"Free Margin:  ${data['free_margin']:,.2f}\n"
+            f"Margin Level: {data['margin_level']:.2f}%\n"
             f"Profit:       ${data['profit']:,.2f}\n"
             f"Leverage:     1:{data['leverage']}\n"
             f"Currency:     {data['currency']}"
@@ -608,6 +613,28 @@ async def mt5_positions_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     f"#{p['ticket']} {p['type']} {p['symbol']}\n"
                     f"   Vol: {p['volume']} | Open: {p['open_price']} → {p['current_price']}\n"
                     f"   SL: {p['sl']} | TP: {p['tp']} | P&L: ${p['profit']:,.2f}\n"
+                )
+            text = "\n".join(lines)
+    await query.edit_message_text(text, reply_markup=back_keyboard())
+
+
+async def mt5_orders_btn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = get_mt5_orders()
+    if data.get("error"):
+        text = f"❌ MT5 Error\n\n{data['error']}"
+    else:
+        pending = data.get("orders", [])
+        if not pending:
+            text = "🕓 MT5 Pending Orders\n\nNo pending orders."
+        else:
+            lines = [f"🕓 MT5 Pending Orders — {len(pending)}\n"]
+            for o in pending:
+                lines.append(
+                    f"#{o['ticket']} {o['type']} {o['symbol']}\n"
+                    f"   Vol: {o['volume']} | Price: {o['price_open']}\n"
+                    f"   SL: {o['sl']} | TP: {o['tp']}\n"
                 )
             text = "\n".join(lines)
     await query.edit_message_text(text, reply_markup=back_keyboard())
@@ -1791,6 +1818,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(mt5_status_btn,    pattern="^mt5_status$"))
     app.add_handler(CallbackQueryHandler(mt5_account_btn,   pattern="^mt5_account$"))
     app.add_handler(CallbackQueryHandler(mt5_positions_btn, pattern="^mt5_positions$"))
+    app.add_handler(CallbackQueryHandler(mt5_orders_btn,    pattern="^mt5_orders$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern="^noop$"))
 
     # Auto-scan job — every 10 minutes, first run after 60 s
